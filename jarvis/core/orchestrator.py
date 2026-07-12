@@ -131,8 +131,9 @@ class IntentParser:
         ],
         Domain.CREATOR: [
             "write", "design", "draw", "compose", "video", "music", "image",
-            "photo", "edit", "render", "animate", "story",
+            "photo", "edit", "render", "animate", "story", "novel", "fiction",
             "写作", "设计", "绘画", "作曲", "视频", "音乐", "图片", "渲染",
+            "写", "小说", "故事", "创作", "写一", "写个", "画", "画一",
         ],
         Domain.SECURITY: [
             "monitor", "scan", "alert", "threat", "firewall", "encrypt",
@@ -146,8 +147,9 @@ class IntentParser:
         ],
         Domain.FINANCE: [
             "budget", "invest", "stock", "crypto", "tax", "expense", "income",
-            "trade", "portfolio", "market", "bank",
+            "trade", "portfolio", "market", "bank", "fund", "asset",
             "预算", "投资", "股票", "加密货币", "税务", "支出", "收入", "交易",
+            "投资组合", "理财", "基金", "资产", "收益率", "持仓", "盈亏",
         ],
         Domain.HOME: [
             "light", "temperature", "lock", "camera", "thermostat", "door",
