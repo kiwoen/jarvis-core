@@ -102,10 +102,16 @@ class SurvivalMechanism:
         1. Probation candidates identified via MeritBoard
         2. 3 consecutive probation cycles → elimination
         3. Eliminated minister's genome archived for analysis
-        4. Vacancy filled by cloning top performer with mutation
+        4. Vacancy filled by crossover (双亲交叉) or clone-mutate
 
-    Key principle: the court has finite capacity. Underperformers
-    must make way for potentially better variants.
+    Key principles:
+        - Elitism: top N ministers are protected from demotion/probation
+        - Crossover: combine two top performers to create superior offspring
+        - Mutation: single-parent cloning with random perturbation (fallback)
+        - Diversity: crossover + mutation rates adapt to population diversity
+
+    The court has finite capacity. Underperformers must make way for
+    potentially better variants — evolved through natural selection.
     """
 
     # How many probation cycles before elimination
@@ -117,10 +123,24 @@ class SurvivalMechanism:
     # Minimum court size
     MIN_COURT_SIZE = 4
 
+    # Number of top ministers protected from demotion/probation
+    ELITISM_COUNT = 2
+
+    # Minimum merit required to qualify for elite protection
+    ELITE_MERIT_FLOOR = 30
+
+    # Probability of using crossover (vs clone-mutate) when filling vacancies
+    CROSSOVER_RATE = 0.6
+
+    # Mutation rate scaling factor (applied to genomic mutation deltas)
+    MUTATION_SCALE = 1.0
+
     def __init__(
         self,
         merit_board: Any = None,
         minister_registry: Optional[dict[str, Any]] = None,
+        elitism_count: int = ELITISM_COUNT,
+        crossover_rate: float = CROSSOVER_RATE,
     ) -> None:
         self._merit_board = merit_board
         self._registry = minister_registry or {}
@@ -130,6 +150,9 @@ class SurvivalMechanism:
         self._archive: list[MinisterGenome] = []  # Eliminated genomes
         self._events: list[EvolutionEvent] = []
         self._cycle_count = 0
+        self._elitism_count = max(1, elitism_count)
+        self._crossover_rate = max(0.0, min(1.0, crossover_rate))
+        self._mutation_scale = self.MUTATION_SCALE
 
     # ------------------------------------------------------------------
     # Registration
@@ -241,13 +264,17 @@ class SurvivalMechanism:
     def _identify_probation_candidates(
         self,
     ) -> tuple[list[EvolutionEvent], list[str]]:
-        """Identify active ministers who should enter probation."""
+        """Identify active ministers who should enter probation.
+
+        Elite ministers (top ELITISM_COUNT) are immune to probation.
+        """
         actions: list[EvolutionEvent] = []
         issues: list[str] = []
 
         if self._merit_board is None:
             return actions, issues
 
+        elites = self._get_elite_set()
         candidates = self._merit_board.get_probation_candidates()
         for minister in candidates:
             current_status = self._statuses.get(minister, MinisterStatus.ACTIVE)
@@ -255,9 +282,13 @@ class SurvivalMechanism:
             if current_status != MinisterStatus.ACTIVE:
                 continue
 
+            # Elitism: top performers are immune to probation
+            if minister in elites:
+                continue
+
             merit = self._merit_board.compute_merit(minister)
             self._statuses[minister] = MinisterStatus.PROBATION
-            self._probation_cycles[minister] = 0  # initialized, incremented in _process_probationers
+            self._probation_cycles[minister] = 0
             event = EvolutionEvent(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 minister=minister,
@@ -281,10 +312,14 @@ class SurvivalMechanism:
         """Evaluate ministers currently in probation.
 
         Increments probation cycle each evaluation.
-        If probation_cycles >= MAX → eliminate.
+        If probation_cycles >= MAX → eliminate (elites excluded).
         If merit has recovered → remove probation.
+
+        Elite ministers (top ELITISM_COUNT) are immune to elimination.
         """
         actions: list[EvolutionEvent] = []
+        elites = self._get_elite_set()
+
         for minister, status in list(self._statuses.items()):
             if status != MinisterStatus.PROBATION:
                 continue
@@ -301,6 +336,16 @@ class SurvivalMechanism:
             )
 
             if cycles >= self.MAX_PROBATION_CYCLES:
+                # Elitism: protect top performers from elimination
+                if minister in elites:
+                    self._statuses[minister] = MinisterStatus.ACTIVE
+                    self._probation_cycles[minister] = 0
+                    logger.info(
+                        "[Evolution] %s spared by elitism despite probation",
+                        minister,
+                    )
+                    continue
+
                 # Too many cycles — eliminate
                 if self._can_eliminate():
                     self._statuses[minister] = MinisterStatus.ELIMINATED
@@ -339,11 +384,19 @@ class SurvivalMechanism:
         return actions
 
     def _demote_underperformers(self) -> list[EvolutionEvent]:
-        """Demote active ministers with critically low merit to shadow."""
+        """Demote active ministers with critically low merit to shadow.
+
+        Elite ministers (top ELITISM_COUNT) are immune to demotion.
+        """
         actions: list[EvolutionEvent] = []
+        elites = self._get_elite_set()
+
         for minister, status in list(self._statuses.items()):
             if status != MinisterStatus.ACTIVE:
                 continue
+            if minister in elites:
+                continue  # Elite protection
+
             merit = (
                 self._merit_board.compute_merit(minister)
                 if self._merit_board else 50
@@ -394,9 +447,13 @@ class SurvivalMechanism:
         return actions
 
     def _fill_vacancies(self) -> list[EvolutionEvent]:
-        """Fill court vacancies by cloning top performers.
+        """Fill court vacancies via crossover or clone-mutate.
 
-        Vacancy = a minister was eliminated but we're below ideal court size.
+        Strategy (in order of preference):
+        1. CROSSOVER: combine two top performers from different domains (60% chance)
+        2. CLONE_MUTATE: clone single top performer with mutation (fallback)
+
+        Crossover preferred because it produces higher genetic diversity.
         """
         actions: list[EvolutionEvent] = []
         active = sum(
@@ -413,17 +470,54 @@ class SurvivalMechanism:
         if total_available >= 8:
             return actions
 
-        # Find top performer to clone
-        top_name, top_merit = self._find_top_performer()
-        if top_name is None:
+        # Find top N performers
+        top_n = self._find_top_n(3)
+        if not top_n:
             return actions
 
-        # Clone with mutation
-        new_name = self._generate_clone_name(top_name)
+        # Try crossover if we have at least 2 candidates and RNG says yes
+        if len(top_n) >= 2 and random.random() < self._crossover_rate:
+            parent1 = self._genomes.get(top_n[0][0])
+            parent2 = self._genomes.get(top_n[1][0])
+            if parent1 and parent2 and parent1.domain != parent2.domain:
+                new_name = self._generate_clone_name(parent1.name)
+                crossed = self._crossover_genome(parent1, parent2, new_name)
+                self._genomes[new_name] = crossed
+                self._statuses[new_name] = MinisterStatus.SHADOW
+                self._probation_cycles[new_name] = 0
+
+                event = EvolutionEvent(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    minister=new_name,
+                    action=EvolutionAction.CLONE_MUTATE,
+                    reason=f"交叉繁殖：{parent1.name}({parent1.domain}) × {parent2.name}({parent2.domain})",
+                    previous_merit=0,
+                    details={
+                        "method": "crossover",
+                        "parent1": parent1.name,
+                        "parent2": parent2.name,
+                        "domain": crossed.domain,
+                        "temperature": crossed.temperature,
+                        "confidence_baseline": crossed.confidence_baseline,
+                        "generation": crossed.generation,
+                    },
+                )
+                actions.append(event)
+                self._events.append(event)
+                logger.info(
+                    "[Evolution] Crossover: %s × %s → %s (domain=%s, gen %d)",
+                    parent1.name, parent2.name, new_name,
+                    crossed.domain, crossed.generation,
+                )
+                return actions
+
+        # Fallback: clone-mutate from single top performer
+        top_name, top_merit = top_n[0]
         parent_genome = self._genomes.get(top_name)
         if parent_genome is None:
             return actions
 
+        new_name = self._generate_clone_name(top_name)
         mutated = self._mutate_genome(parent_genome, new_name)
         self._genomes[new_name] = mutated
         self._statuses[new_name] = MinisterStatus.SHADOW
@@ -436,6 +530,7 @@ class SurvivalMechanism:
             reason=f"克隆自 {top_name}（功勋 {top_merit:.1f}）填补空缺",
             previous_merit=0,
             details={
+                "method": "clone_mutate",
                 "parent": top_name,
                 "mutation": {
                     "temperature": mutated.temperature,
@@ -549,19 +644,85 @@ class SurvivalMechanism:
     # Genome operations
     # ------------------------------------------------------------------
 
+    def _crossover_genome(
+        self,
+        parent1: MinisterGenome,
+        parent2: MinisterGenome,
+        child_name: str,
+    ) -> MinisterGenome:
+        """Create offspring via uniform crossover of two parents.
+
+        Each gene has 50% chance of coming from either parent.
+        Domain: inherited from the higher-merit parent (conservation of
+        specialization). A small mutation is applied after crossover
+        to prevent exact cloning of either parent.
+
+        This is the core genetic algorithm operation that enables
+        combining beneficial traits from two different lineages.
+        """
+        # Determine which parent has higher merit
+        merit1 = 0.0
+        merit2 = 0.0
+        if self._merit_board:
+            merit1 = self._merit_board.compute_merit(parent1.name)
+            merit2 = self._merit_board.compute_merit(parent2.name)
+
+        better_parent = parent1 if merit1 >= merit2 else parent2
+
+        # Uniform crossover: randomly pick each gene from either parent
+        temperature = random.choice([parent1.temperature, parent2.temperature])
+        confidence_baseline = random.choice(
+            [parent1.confidence_baseline, parent2.confidence_baseline]
+        )
+        exploration_rate = random.choice(
+            [parent1.exploration_rate, parent2.exploration_rate]
+        )
+        conservatism = random.choice(
+            [parent1.conservatism, parent2.conservatism]
+        )
+        prompt_mutation_rate = random.choice(
+            [parent1.prompt_mutation_rate, parent2.prompt_mutation_rate]
+        )
+        specialization_weight = random.choice(
+            [parent1.specialization_weight, parent2.specialization_weight]
+        )
+
+        # Domain: inherit from better parent to preserve specialization
+        domain = better_parent.domain
+
+        # Small post-crossover mutation for diversity
+        temp_jitter = random.uniform(-0.05, 0.05) * self._mutation_scale
+        conf_jitter = random.uniform(-0.03, 0.03) * self._mutation_scale
+
+        return MinisterGenome(
+            name=child_name,
+            domain=domain,
+            temperature=max(0.2, min(1.0, temperature + temp_jitter)),
+            confidence_baseline=max(
+                0.3, min(0.95, confidence_baseline + conf_jitter)
+            ),
+            exploration_rate=exploration_rate,
+            conservatism=conservatism,
+            prompt_mutation_rate=prompt_mutation_rate,
+            specialization_weight=specialization_weight,
+            generation=max(parent1.generation, parent2.generation) + 1,
+            parent=f"{parent1.name}×{parent2.name}",
+        )
+
     def _mutate_genome(
         self, parent: MinisterGenome, new_name: str
     ) -> MinisterGenome:
         """Create a mutated clone of a parent genome.
 
         Mutation rules:
-        - Temperature: perturb by ±0.1 (capped at [0.2, 1.0])
-        - Confidence baseline: perturb by ±0.05 (capped at [0.3, 0.95])
+        - Temperature: perturb by ±0.15 × mutation_scale (capped at [0.2, 1.0])
+        - Confidence baseline: perturb by ±0.08 × mutation_scale (capped at [0.3, 0.95])
         - Exploration rate: flip with 30% chance
         - Prompt mutation rate: slight increase each generation
         """
-        temp_delta = random.uniform(-0.15, 0.15)
-        conf_delta = random.uniform(-0.08, 0.08)
+        scale = self._mutation_scale
+        temp_delta = random.uniform(-0.15, 0.15) * scale
+        conf_delta = random.uniform(-0.08, 0.08) * scale
 
         new_temp = max(0.2, min(1.0, parent.temperature + temp_delta))
         new_conf = max(0.3, min(0.95, parent.confidence_baseline + conf_delta))
@@ -592,6 +753,7 @@ class SurvivalMechanism:
 
         Scans existing clones and picks the next available number.
         Pattern: 丞相_v2, 太卜_v3, etc.
+        Crossover offspring use parent1's naming convention.
         """
         existing = [
             n for n in self._genomes
@@ -624,6 +786,21 @@ class SurvivalMechanism:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _get_elite_set(self) -> set[str]:
+        """Return the set of elite (protected) minister names.
+
+        Elites are the top ELITISM_COUNT ministers by merit,
+        but only those with merit >= ELITE_MERIT_FLOOR.
+        This prevents protecting low-performers just because
+        they happen to be the best in a weak court.
+        """
+        threshold = max(0, self.ELITE_MERIT_FLOOR)
+        top_n = self._find_top_n(self._elitism_count)
+        return {
+            name for name, merit in top_n
+            if merit >= threshold
+        }
+
     def _can_eliminate(self) -> bool:
         """Check if we can eliminate without going below minimum court size."""
         active_and_shadow = sum(
@@ -632,21 +809,29 @@ class SurvivalMechanism:
         )
         return active_and_shadow > self.MIN_COURT_SIZE
 
-    def _find_top_performer(self) -> tuple[Optional[str], float]:
-        """Find the highest-merit active minister."""
-        best_name: Optional[str] = None
-        best_merit = 0.0
+    def _find_top_n(self, n: int) -> list[tuple[str, float]]:
+        """Find the top N performers by merit, sorted descending.
+
+        Returns list of (name, merit) tuples. Excludes eliminated ministers.
+        """
+        scored: list[tuple[str, float]] = []
         for name, status in self._statuses.items():
-            if status not in (MinisterStatus.ACTIVE, MinisterStatus.SHADOW):
+            if status == MinisterStatus.ELIMINATED:
                 continue
             merit = (
                 self._merit_board.compute_merit(name)
                 if self._merit_board else 0
             )
-            if merit > best_merit:
-                best_merit = merit
-                best_name = name
-        return best_name, best_merit
+            scored.append((name, merit))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:n]
+
+    def _find_top_performer(self) -> tuple[Optional[str], float]:
+        """Find the single highest-merit minister."""
+        top_n = self._find_top_n(1)
+        if top_n:
+            return top_n[0]
+        return None, 0.0
 
     # ------------------------------------------------------------------
     # Query

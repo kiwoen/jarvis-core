@@ -524,3 +524,186 @@ class TestEdgeCases:
             mutated = sm._mutate_genome(parent2, f"test2_v{_}")
             assert 0.2 <= mutated.temperature <= 1.0
             assert 0.3 <= mutated.confidence_baseline <= 0.95
+
+
+# ── TestCrossover ────────────────────────────────────────────────────
+
+
+class TestCrossover:
+    """Tests for the _crossover_genome dual-parent genetic operation."""
+
+    def test_crossover_creates_child_with_mixed_traits(self):
+        """Child inherits genes from both parents, not just one."""
+        sm = SurvivalMechanism()
+
+        parent1 = MinisterGenome(
+            name="p1", domain="code",
+            temperature=0.3, confidence_baseline=0.9,
+            exploration_rate=0.4, conservatism=0.5,
+            prompt_mutation_rate=0.1, specialization_weight=0.6,
+        )
+        parent2 = MinisterGenome(
+            name="p2", domain="writing",
+            temperature=0.8, confidence_baseline=0.4,
+            exploration_rate=0.9, conservatism=0.1,
+            prompt_mutation_rate=0.3, specialization_weight=0.2,
+        )
+
+        child = sm._crossover_genome(parent1, parent2, "offspring")
+
+        # Child should NOT be an exact copy of either parent
+        all_p1_genes = (
+            child.temperature == parent1.temperature
+            and child.confidence_baseline == parent1.confidence_baseline
+            and child.exploration_rate == parent1.exploration_rate
+            and child.conservatism == parent1.conservatism
+            and child.prompt_mutation_rate == parent1.prompt_mutation_rate
+            and child.specialization_weight == parent1.specialization_weight
+        )
+        all_p2_genes = (
+            child.temperature == parent2.temperature
+            and child.confidence_baseline == parent2.confidence_baseline
+            and child.exploration_rate == parent2.exploration_rate
+            and child.conservatism == parent2.conservatism
+            and child.prompt_mutation_rate == parent2.prompt_mutation_rate
+            and child.specialization_weight == parent2.specialization_weight
+        )
+        assert not all_p1_genes, "child cloned parent1 entirely"
+        assert not all_p2_genes, "child cloned parent2 entirely"
+
+    def test_crossover_increments_generation(self):
+        """Child generation = max(parent generations) + 1."""
+        sm = SurvivalMechanism()
+
+        p1 = MinisterGenome(name="p1", domain="code", generation=5)
+        p2 = MinisterGenome(name="p2", domain="writing", generation=3)
+
+        child = sm._crossover_genome(p1, p2, "offspring")
+        assert child.generation == 6  # max(5, 3) + 1
+
+    def test_crossover_parent_field_is_concatenation(self):
+        """Parent field shows both lineage names."""
+        sm = SurvivalMechanism()
+
+        p1 = MinisterGenome(name="p1", domain="code")
+        p2 = MinisterGenome(name="p2", domain="writing")
+
+        child = sm._crossover_genome(p1, p2, "offspring")
+        assert "p1" in child.parent
+        assert "p2" in child.parent
+
+    def test_crossover_domain_is_from_better_parent(self):
+        """Domain inherits from the parent with higher merit."""
+        sm = SurvivalMechanism()
+        mb = make_board_with_data([
+            ("p1", True, 0.9),
+            ("p1", True, 0.9),
+        ])
+        sm._merit_board = mb
+
+        p1 = MinisterGenome(name="p1", domain="code")
+        p2 = MinisterGenome(name="p2", domain="writing")
+
+        child = sm._crossover_genome(p1, p2, "offspring")
+        # p1 has higher merit (2 dispatches) → domain should be "code"
+        assert child.domain == "code"
+
+    def test_crossover_different_parents_yields_varied_children(self):
+        """Multiple crossovers from same pair produce genetically diverse kids."""
+        sm = SurvivalMechanism()
+
+        p1 = MinisterGenome(
+            name="p1", domain="code",
+            temperature=0.3, confidence_baseline=0.9,
+            exploration_rate=0.4, conservatism=0.5,
+        )
+        p2 = MinisterGenome(
+            name="p2", domain="writing",
+            temperature=0.8, confidence_baseline=0.4,
+            exploration_rate=0.9, conservatism=0.1,
+        )
+
+        children = [
+            sm._crossover_genome(p1, p2, f"child_{i}")
+            for i in range(20)
+        ]
+
+        # With 6 binary genes, multiple crossovers should produce variation
+        temps = {c.temperature for c in children}
+        confs = {c.confidence_baseline for c in children}
+        assert len(temps) > 1, "all children got same temperature"
+        assert len(confs) > 1, "all children got same confidence"
+
+
+# ── TestElitism ──────────────────────────────────────────────────────
+
+
+class TestElitism:
+    """Tests for elitism protection in demotion/probation/elimination."""
+
+    def test_elite_set_excludes_low_merit(self):
+        """Ministers below ELITE_MERIT_FLOOR are not elite even if top ranked."""
+        sm = SurvivalMechanism()
+        # All failed dispatches — merit stays well below 30
+        data = [
+            ("丞相", False, 0.2),
+            ("工部尚书", False, 0.1),
+            ("吏部尚书", False, 0.1),
+        ]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("工部尚书", "code")
+        sm.register_minister("吏部尚书", "analysis")
+
+        elites = sm._get_elite_set()
+        assert len(elites) == 0
+
+    def test_elite_set_includes_high_merit(self):
+        """Ministers above ELITE_MERIT_FLOOR and top-ranked are elite."""
+        sm = SurvivalMechanism()
+        # Create 10 successful dispatches for top minister
+        data = [("丞相", True, 0.9) for _ in range(10)]
+        data += [("工部尚书", True, 0.5) for _ in range(3)]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("工部尚书", "code")
+
+        elites = sm._get_elite_set()
+        assert "丞相" in elites
+
+    def test_elite_immune_to_demotion(self):
+        """High-merit elite is not demoted despite low score later."""
+        sm = SurvivalMechanism()
+        # Build up high merit first
+        data = [("丞相", True, 0.9) for _ in range(20)]
+        mb = MeritBoard()
+        for i, (name, success, confidence) in enumerate(data):
+            mb.record_dispatch(name, f"e{i}", "test", success, confidence)
+        sm._merit_board = mb
+
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("工部尚书", "code")
+        sm.register_minister("吏部尚书", "analysis")
+        sm.register_minister("太卜", "search")
+
+        # Even though demotion threshold is <20, elite should survive
+        actions = sm._demote_underperformers()
+        demoted_names = {a.minister for a in actions}
+        assert "丞相" not in demoted_names
+
+    def test_elite_immune_to_probation(self):
+        """High-merit elite skips probation marks."""
+        sm = SurvivalMechanism()
+        data = [("丞相", True, 0.9) for _ in range(20)]
+        data += [("工部尚书", False, 0.2)]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("工部尚书", "code")
+
+        actions, _ = sm._identify_probation_candidates()
+        probated = {a.minister for a in actions}
+        assert "丞相" not in probated
