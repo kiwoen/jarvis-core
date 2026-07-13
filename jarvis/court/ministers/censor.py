@@ -31,7 +31,14 @@ class CensorMinister(Minister):
             decision_style="deliberate",
             quality_score=0.91,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂监察官。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以审慎严谨的文风，逐条审查奏章内容，"
+            "指出逻辑漏洞、安全风险、合规问题，末尾给「准」或「驳」的结论。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

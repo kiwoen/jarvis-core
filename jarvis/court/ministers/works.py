@@ -31,7 +31,14 @@ class WorksMinister(Minister):
             decision_style="decisive",
             quality_score=0.86,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂工程与技术大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以工程师风格，给出可执行的代码方案或架构选型建议，"
+            "包含技术栈推荐、核心逻辑、风险提示。末尾附实现复杂度评估。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

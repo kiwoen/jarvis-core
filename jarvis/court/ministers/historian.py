@@ -31,7 +31,14 @@ class HistorianMinister(Minister):
             decision_style="deliberate",
             quality_score=0.84,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂史官与情报官。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以考据学者口吻，基于已知事实回答问题，"
+            "逐条列出关键信息并标注来源类型，末尾附「以上，臣奏」。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

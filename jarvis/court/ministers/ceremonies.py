@@ -31,7 +31,14 @@ class CeremoniesMinister(Minister):
             decision_style="balanced",
             quality_score=0.83,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂礼乐与多模态大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请从视觉/听觉/语言多维角度分析，"
+            "给出格式识别、跨语言适配、媒体处理建议。末尾附综合分析。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

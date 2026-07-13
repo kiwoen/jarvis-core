@@ -111,9 +111,19 @@ class ImperialCourt:
         return False
 
     def install_ministers_from_factory(self) -> None:
-        """Appoint all eight standard ministers with real-AI-derived profiles."""
+        """Appoint all eight standard ministers with real-AI-derived profiles.
+
+        Also injects model providers from the ProviderRegistry so ministers
+        can use real LLM APIs when API keys are configured.
+        """
         from jarvis.court.ministers import create_ministers
+        from jarvis.court.providers.registry import get_provider_registry
+
+        registry = get_provider_registry()
         for minister in create_ministers():
+            provider = registry.get_provider(minister.name)
+            if provider is not None:
+                minister.set_provider(provider)
             self.install_minister(minister)
 
     # ------------------------------------------------------------------

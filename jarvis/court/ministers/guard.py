@@ -31,7 +31,14 @@ class GuardMinister(Minister):
             decision_style="decisive",
             quality_score=0.82,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂安全与守卫大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以安全审计官口吻，逐项列出风险等级（高/中/低），"
+            "给出修复优先级与具体措施。末尾附安全评分（1-10）。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

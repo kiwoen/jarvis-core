@@ -31,7 +31,14 @@ class FinanceMinister(Minister):
             decision_style="decisive",
             quality_score=0.79,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂财政与优化大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以精算师口吻，从成本、效率、资源三维度分析，"
+            "给出量化方案（含预估数字），末尾附节约百分比与优化路径。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

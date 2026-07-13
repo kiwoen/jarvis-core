@@ -31,7 +31,14 @@ class DivinerMinister(Minister):
             decision_style="deliberate",
             quality_score=0.87,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂科学与预测大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以科学家风格，从第一性原理出发做深度推理链分析，"
+            "包含假设、因果链、置信区间、潜在反例。末尾附「推演完毕」。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         await asyncio.sleep(0)

@@ -300,6 +300,7 @@ class SystemIntegration:
                 "decrees": court_metrics.get("decree_count", 0),
                 "recent_success_rate": court_metrics.get("recent_success_rate", 0),
             },
+            "providers": self._get_provider_status(),
         }
 
     def topic_summary(self) -> dict:
@@ -307,3 +308,12 @@ class SystemIntegration:
         if self._bus:
             return self._bus.topic_summary()
         return {}
+
+    def _get_provider_status(self) -> dict:
+        """Return model provider availability for all ministers."""
+        try:
+            from jarvis.court.providers.registry import get_provider_registry
+            registry = get_provider_registry()
+            return registry.get_status()
+        except Exception:
+            return {}

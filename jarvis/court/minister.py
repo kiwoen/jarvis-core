@@ -104,10 +104,16 @@ class Minister:
         - Experience memory (for self-evolution)
         - Capability negotiation (defer to better-suited ministers)
         - Report composition
+        - Real model provider integration (with mock fallback)
     """
 
-    def __init__(self, profile: MinisterProfile) -> None:
+    def __init__(
+        self,
+        profile: MinisterProfile,
+        system_prompt_template: str = "",
+    ) -> None:
         self.profile = profile
+        self.system_prompt_template = system_prompt_template
         self.state: MinisterState = MinisterState.IDLE
         self.experience: list[ExperienceRecord] = []
         self.dispatch_count: int = 0
@@ -117,6 +123,53 @@ class Minister:
         # Adaptive parameters
         self._current_temperature: float = 0.7  # Adjusts based on confidence history
         self._confidence_baseline: float = profile.quality_score
+        # Model provider — injected after construction
+        self._provider: Optional[Any] = None
+
+    def set_provider(self, provider: Any) -> None:
+        """Inject a real model provider (called by ProviderRegistry)."""
+        self._provider = provider
+
+    @property
+    def has_real_model(self) -> bool:
+        """Whether this minister has a configured real model provider."""
+        return self._provider is not None and self._provider.is_available
+
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt from template, filling in minister metadata."""
+        if not self.system_prompt_template:
+            return ""
+        return self.system_prompt_template.format(
+            title=self.profile.title,
+            archetype=self.profile.archetype,
+            domain=self.profile.domain,
+            strengths=", ".join(self.profile.strengths[:6]),
+            weaknesses=", ".join(self.profile.weaknesses[:4]),
+        )
+
+    async def _try_real_model(self, edict: Edict) -> Optional[tuple[str, float]]:
+        """Attempt to use the real model provider.
+
+        Returns (output, confidence) on success, None if unavailable or error.
+        """
+        if self._provider is None:
+            return None
+        try:
+            from jarvis.court.providers.base import GenerationParams
+            system = self._build_system_prompt()
+            params = GenerationParams(
+                system_prompt=system,
+                temperature=self._current_temperature,
+            )
+            response = await self._provider.generate(edict.intent, params)
+            if response is not None:
+                return response.text, response.confidence
+        except Exception as e:
+            logger.warning(
+                "[%s] Real model call failed, falling back to mock: %s",
+                self.name, e,
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Identity
@@ -210,9 +263,13 @@ class Minister:
             start = time.monotonic()
             memorial: Memorial
             try:
-                # Subclass-defined domain logic
+                # Try real model first, fall back to mock _handle()
                 self.state = MinisterState.EXECUTING
-                output, confidence = await self._handle(edict)
+                real_result = await self._try_real_model(edict)
+                if real_result is not None:
+                    output, confidence = real_result
+                else:
+                    output, confidence = await self._handle(edict)
 
                 self.state = MinisterState.REPORTING
                 exec_ms = (time.monotonic() - start) * 1000

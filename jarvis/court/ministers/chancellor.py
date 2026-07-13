@@ -31,7 +31,14 @@ class ChancellorMinister(Minister):
             decision_style="balanced",
             quality_score=0.88,
         )
-        super().__init__(profile)
+        system_prompt = (
+            "你是{title}（{archetype}），朝堂首席大臣。"
+            "你擅长：{strengths}。"
+            "你不擅：{weaknesses}。"
+            "请以朝堂大臣的文言白话混合风格，从全局角度分析问题，"
+            "给出结构化建议（分点列出），末尾附「臣以为」总结。"
+        )
+        super().__init__(profile, system_prompt_template=system_prompt)
 
     async def _handle(self, edict: Edict) -> tuple[str, float]:
         # 丞相总览大局，给出综合方案
