@@ -1,0 +1,250 @@
+"""
+JARVIS System Integration — wires all subsystems together.
+
+This module is the central nervous system of JARVIS. It creates and
+connects the MessageBus, CodexEngine, VSCodeBridge, HermesMCP, and
+the Orchestrator into a cohesive runtime.
+
+Startup order:
+    1. MessageBus               — transport layer
+    2. CodexEngine              — code intelligence (subscribes to codex.*)
+    3. VSCodeBridge             — editor bridge (subscribes to vscode.*)
+    4. HermesMCPServer          — exposes Hermes to external MCP clients
+    5. HermesMCPClient          — connects Hermes to external MCP servers
+    6. Orchestrator             — master controller (routes through bus)
+
+Shutdown: reverse order, graceful cancellation of pending operations.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger("jarvis.integration")
+
+
+class SystemIntegration:
+    """Central wiring hub for all JARVIS subsystems.
+
+    Usage:
+        integration = SystemIntegration()
+        await integration.start()
+
+        # Now all subsystems are connected and running:
+        # - orchestrator.execute("帮我分析这段代码") → CodexEngine via Hermes
+        # - orchestrator.execute("打开 VSCode 并格式化文档") → VSCodeBridge via Hermes
+
+        await integration.shutdown()
+    """
+
+    def __init__(self) -> None:
+        self._bus: Any = None
+        self._codex_engine: Any = None
+        self._vscode_bridge: Any = None
+        self._hermes_server: Any = None
+        self._hermes_client: Any = None
+        self._orchestrator: Any = None
+        self._running = False
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def bus(self) -> Any:
+        if self._bus is None:
+            raise RuntimeError("Integration not started — call start() first")
+        return self._bus
+
+    @property
+    def orchestrator(self) -> Any:
+        if self._orchestrator is None:
+            raise RuntimeError("Integration not started — call start() first")
+        return self._orchestrator
+
+    @property
+    def codex(self) -> Any:
+        return self._codex_engine
+
+    @property
+    def vscode(self) -> Any:
+        return self._vscode_bridge
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(
+        self,
+        memory_engine: Any = None,
+        evolution_controller: Any = None,
+        sandbox_manager: Any = None,
+    ) -> None:
+        """Start all subsystems in dependency order.
+
+        Args:
+            memory_engine: Optional MemoryEngine instance
+            evolution_controller: Optional EvolutionController instance
+            sandbox_manager: Optional SandboxManager instance
+        """
+        if self._running:
+            logger.warning("SystemIntegration already running")
+            return
+
+        logger.info("=" * 50)
+        logger.info("JARVIS System Integration — starting subsystems")
+        logger.info("=" * 50)
+
+        # ── Phase 1: Message Bus ─────────────────────────────────────────
+        logger.info("[1/6] Starting MessageBus ...")
+        from jarvis.hermes.bus import MessageBus
+        self._bus = MessageBus()
+        await self._bus.start()
+        logger.info("  ✓ MessageBus ready (%d subscribers)",
+                     self._bus.subscriber_count)
+
+        # ── Phase 2: Codex Engine ────────────────────────────────────────
+        logger.info("[2/6] Starting CodexEngine ...")
+        from jarvis.codex.analyzer import Analyzer
+        from jarvis.codex.generator import Generator
+        from jarvis.codex.engine import CodexEngine
+        analyzer = Analyzer()
+        generator = Generator()
+        self._codex_engine = CodexEngine(self._bus, analyzer, generator)
+        await self._codex_engine.start()
+        logger.info("  ✓ CodexEngine ready (%d subscribers)",
+                     self._bus.subscriber_count)
+
+        # ── Phase 3: VSCode Bridge ───────────────────────────────────────
+        logger.info("[3/6] Starting VSCodeBridge ...")
+        from jarvis.vscode.commands import VSCodeCommands
+        from jarvis.vscode.bridge import VSCodeBridge
+        commands = VSCodeCommands(code_cli="code")
+        self._vscode_bridge = VSCodeBridge(self._bus, commands, backend="extension")
+        await self._vscode_bridge.start()
+        logger.info("  ✓ VSCodeBridge ready (%d subscribers)",
+                     self._bus.subscriber_count)
+
+        # ── Phase 4: Hermes MCP Server ───────────────────────────────────
+        logger.info("[4/6] Starting HermesMCPServer ...")
+        from jarvis.hermes_agent.server import HermesMCPServer
+        self._hermes_server = HermesMCPServer(self._bus)
+        # Server doesn't need explicit start — it's passive, driven by MCP
+        logger.info("  ✓ HermesMCPServer ready (4 tools exposed)")
+
+        # ── Phase 5: Hermes MCP Client ───────────────────────────────────
+        logger.info("[5/6] Starting HermesMCPClient ...")
+        from jarvis.hermes_agent.client import HermesMCPClient
+        self._hermes_client = HermesMCPClient(self._bus)
+        await self._hermes_client.start()
+        logger.info("  ✓ HermesMCPClient ready")
+
+        # ── Phase 6: Orchestrator ────────────────────────────────────────
+        logger.info("[6/6] Starting Orchestrator ...")
+        from jarvis.core.orchestrator import Orchestrator
+        self._orchestrator = Orchestrator(
+            memory_engine=memory_engine,
+            evolution_controller=evolution_controller,
+            sandbox_manager=sandbox_manager,
+        )
+        self._orchestrator.load_all_domains()
+        self._orchestrator.bus = self._bus  # Inject bus for cross-domain routing
+        logger.info("  ✓ Orchestrator ready (%d domains loaded)",
+                     len(self._orchestrator.registry.list_domains()))
+
+        self._running = True
+        logger.info("=" * 50)
+        logger.info("JARVIS System Integration — ALL SYSTEMS GO")
+        logger.info("=" * 50)
+
+    async def shutdown(self) -> None:
+        """Graceful shutdown in reverse dependency order.
+
+        Cancels pending operations, closes connections, stops processes.
+        """
+        if not self._running:
+            return
+
+        logger.info("JARVIS System Integration — shutting down ...")
+
+        # Shutdown in reverse order
+        components = [
+            ("Orchestrator", None),  # no explicit shutdown needed
+            ("HermesMCPClient", self._hermes_client.shutdown() if self._hermes_client else None),
+            ("HermesMCPServer", None),  # passive — no lifecycle
+            ("VSCodeBridge", self._vscode_bridge.shutdown() if self._vscode_bridge else None),
+            ("CodexEngine", self._codex_engine.shutdown() if self._codex_engine else None),
+            ("MessageBus", self._bus.shutdown() if self._bus else None),
+        ]
+
+        for name, coro in reversed(components):
+            if coro is not None:
+                try:
+                    logger.debug("  Stopping %s ...", name)
+                    await coro
+                except Exception:
+                    logger.exception("  ✗ %s shutdown error", name)
+                else:
+                    logger.debug("  ✓ %s stopped", name)
+
+        self._running = False
+        logger.info("JARVIS System Integration — shut down complete")
+
+    # ------------------------------------------------------------------
+    # Convenience: one-shot execute
+    # ------------------------------------------------------------------
+
+    async def execute(self, user_input: str) -> dict:
+        """Execute a user command through the full integrated pipeline.
+
+        Returns a dict with:
+            - success: bool
+            - output: str
+            - domain: str
+            - execution_time_ms: float
+        """
+        if not self._orchestrator:
+            raise RuntimeError("Integration not started")
+
+        result = await self._orchestrator.execute(user_input)
+        return {
+            "success": result.success,
+            "output": str(result.output) if result.output else "",
+            "domain": result.domain.name,
+            "execution_time_ms": result.execution_time_ms,
+            "error": result.error,
+        }
+
+    # ------------------------------------------------------------------
+    # Status / Health Check
+    # ------------------------------------------------------------------
+
+    def status(self) -> dict:
+        """Return a health-check summary of all subsystems."""
+        return {
+            "running": self._running,
+            "bus": {
+                "subscribers": self._bus.subscriber_count if self._bus else 0,
+                "messages": self._bus.message_count if self._bus else 0,
+            },
+            "codex": self._codex_engine is not None,
+            "vscode": self._vscode_bridge is not None,
+            "hermes_server": self._hermes_server is not None,
+            "hermes_client": self._hermes_client is not None,
+            "orchestrator": {
+                "loaded": self._orchestrator is not None,
+                "domains": len(self._orchestrator.registry.list_domains()) if self._orchestrator else 0,
+            },
+        }
+
+    def topic_summary(self) -> dict:
+        """Return the current Hermes topic subscription map."""
+        if self._bus:
+            return self._bus.topic_summary()
+        return {}
