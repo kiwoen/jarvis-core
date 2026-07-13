@@ -265,3 +265,156 @@ class TestConcurrent:
             assert status["running"] is True
             await integration.shutdown()
             assert not integration.running
+
+
+# ── KnowledgeGraph Integration ──────────────────────────────────────────────
+
+class TestKnowledgeGraphIntegration:
+    @pytest.mark.asyncio
+    async def test_kg_loaded_after_start(self):
+        """KnowledgeGraph is initialized and accessible after startup."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        kg = integration.knowledge_graph
+        assert kg is not None
+        summary = kg.summary()
+        assert summary["entity_count"] == 0
+        assert summary["edge_count"] == 0
+
+        status = integration.status()
+        assert status["knowledge_graph"]["loaded"] is True
+        assert status["knowledge_graph"]["entities"] == 0
+        assert status["knowledge_graph"]["edges"] == 0
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_auto_ingest_on_execute(self):
+        """Successful execution auto-ingests intent into KnowledgeGraph."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        # Execute a code intent that goes through CodexEngine
+        result = await integration.execute("分析 Python 代码中的依赖关系")
+        assert result["success"] is True
+
+        # Knowledge graph should have ingested entities from the intent
+        kg = integration.knowledge_graph
+        summary = kg.summary()
+        assert summary["entity_count"] > 0, f"Expected entities, got {summary}"
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_entity_accumulation(self):
+        """Multiple executions accumulate knowledge in the graph."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        await integration.execute("用 Code Review 分析 Python 模块")
+        before = integration.knowledge_graph.summary()
+
+        await integration.execute("用 Vector Engine 搜索文档")
+        after = integration.knowledge_graph.summary()
+
+        # Entity count should increase (or at minimum not decrease)
+        assert after["entity_count"] >= before["entity_count"]
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_access_before_start_raises(self):
+        """Accessing knowledge_graph before start raises RuntimeError."""
+        integration = SystemIntegration()
+        with pytest.raises(RuntimeError, match="Integration not started"):
+            _ = integration.knowledge_graph
+
+    @pytest.mark.asyncio
+    async def test_kg_query_neighbors(self):
+        """Can query KG neighbors after auto-ingestion."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        # Feed related intents to build graph connections
+        await integration.execute("Code Review 分析 Python 代码")
+        await integration.execute("Python 代码依赖 Vector Engine")
+
+        kg = integration.knowledge_graph
+        # Query neighbors for a known entity
+        neighbors = await kg.get_neighbors("Python")
+        assert len(neighbors) > 0
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_find_paths(self):
+        """Can find paths between entities in the graph."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        # Ingest more text to build multi-hop paths
+        await integration.execute("Code Review 使用 Python 通过 Vector Engine 分析代码")
+
+        kg = integration.knowledge_graph
+        paths = await kg.find_paths("Code Review", "Vector Engine", max_depth=4)
+        assert len(paths) > 0, "Expected at least one path between Code Review and Vector Engine"
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_snapshot_roundtrip(self):
+        """KnowledgeGraph snapshot save/load roundtrip works."""
+        import tempfile
+        import os
+
+        integration = SystemIntegration()
+        await integration.start()
+
+        await integration.execute("JARVIS 使用 Hermes 消息总线进行模块通信")
+        await integration.execute("Codex Engine 分析 Python AST 树")
+
+        kg = integration.knowledge_graph
+        before_summary = kg.summary()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot_path = os.path.join(tmpdir, "kg_snapshot.json")
+            await kg.save_snapshot(snapshot_path)
+            assert os.path.exists(snapshot_path)
+
+            # Load into a fresh graph
+            from jarvis.knowledge.graph import KnowledgeGraph
+            kg2 = KnowledgeGraph()
+            await kg2.load_snapshot(snapshot_path)
+
+            after_summary = kg2.summary()
+            assert after_summary["entity_count"] == before_summary["entity_count"]
+            assert after_summary["edge_count"] == before_summary["edge_count"]
+
+        await integration.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_kg_most_central(self):
+        """Most central entities are identifiable after ingestion."""
+        integration = SystemIntegration()
+        await integration.start()
+
+        # Ingest enough data to make centrality meaningful
+        for text in [
+            "JARVIS 使用 Codex Engine 分析代码",
+            "Codex Engine 依赖 Vector Engine",
+            "Vector Engine 通过 Hermes 通信",
+            "Hermes 消息总线连接所有模块",
+            "JARVIS 通过 Hermes 进行跨领域路由",
+        ]:
+            await integration.execute(text)
+
+        kg = integration.knowledge_graph
+        central = await kg.most_central(top_n=5)
+        assert len(central) > 0
+
+        # "JARVIS" or "Hermes" should be among most central
+        top_names = [c["entity"].lower() for c in central]
+        assert len(top_names) > 0
+
+        await integration.shutdown()

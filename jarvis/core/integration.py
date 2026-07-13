@@ -12,6 +12,7 @@ Startup order:
     4. HermesMCPServer          — exposes Hermes to external MCP clients
     5. HermesMCPClient          — connects Hermes to external MCP servers
     6. Orchestrator             — master controller (routes through bus)
+    7. KnowledgeGraph           — cross-domain semantic graph (auto-ingestion)
 
 Shutdown: reverse order, graceful cancellation of pending operations.
 """
@@ -46,6 +47,7 @@ class SystemIntegration:
         self._hermes_server: Any = None
         self._hermes_client: Any = None
         self._orchestrator: Any = None
+        self._knowledge_graph: Any = None
         self._running = False
 
     # ------------------------------------------------------------------
@@ -75,6 +77,12 @@ class SystemIntegration:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def knowledge_graph(self) -> Any:
+        if self._knowledge_graph is None:
+            raise RuntimeError("Integration not started — call start() first")
+        return self._knowledge_graph
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -146,7 +154,7 @@ class SystemIntegration:
         logger.info("  ✓ HermesMCPClient ready")
 
         # ── Phase 6: Orchestrator ────────────────────────────────────────
-        logger.info("[6/6] Starting Orchestrator ...")
+        logger.info("[6/7] Starting Orchestrator ...")
         from jarvis.core.orchestrator import Orchestrator
         self._orchestrator = Orchestrator(
             memory_engine=memory_engine,
@@ -157,6 +165,14 @@ class SystemIntegration:
         self._orchestrator.bus = self._bus  # Inject bus for cross-domain routing
         logger.info("  ✓ Orchestrator ready (%d domains loaded)",
                      len(self._orchestrator.registry.list_domains()))
+
+        # ── Phase 7: KnowledgeGraph ──────────────────────────────────────
+        logger.info("[7/7] Starting KnowledgeGraph ...")
+        from jarvis.knowledge.graph import KnowledgeGraph
+        self._knowledge_graph = KnowledgeGraph()
+        kg_summary = self._knowledge_graph.summary()
+        logger.info("  ✓ KnowledgeGraph ready (%d entities, %d edges)",
+                     kg_summary["entity_count"], kg_summary["edge_count"])
 
         self._running = True
         logger.info("=" * 50)
@@ -175,6 +191,7 @@ class SystemIntegration:
 
         # Shutdown in reverse order
         components = [
+            ("KnowledgeGraph", None),  # no async shutdown — passive in-memory graph
             ("Orchestrator", None),  # no explicit shutdown needed
             ("HermesMCPClient", self._hermes_client.shutdown() if self._hermes_client else None),
             ("HermesMCPServer", None),  # passive — no lifecycle
@@ -213,6 +230,12 @@ class SystemIntegration:
             raise RuntimeError("Integration not started")
 
         result = await self._orchestrator.execute(user_input)
+
+        # Auto-ingest into KnowledgeGraph for cross-domain pattern learning
+        if self._knowledge_graph and result.success:
+            domain = result.domain.name if hasattr(result.domain, "name") else str(result.domain)
+            await self._knowledge_graph.ingest(user_input, domain=domain)
+
         return {
             "success": result.success,
             "output": str(result.output) if result.output else "",
@@ -227,6 +250,7 @@ class SystemIntegration:
 
     def status(self) -> dict:
         """Return a health-check summary of all subsystems."""
+        kg_summary = self._knowledge_graph.summary() if self._knowledge_graph else {}
         return {
             "running": self._running,
             "bus": {
@@ -240,6 +264,11 @@ class SystemIntegration:
             "orchestrator": {
                 "loaded": self._orchestrator is not None,
                 "domains": len(self._orchestrator.registry.list_domains()) if self._orchestrator else 0,
+            },
+            "knowledge_graph": {
+                "loaded": self._knowledge_graph is not None,
+                "entities": kg_summary.get("entity_count", 0),
+                "edges": kg_summary.get("edge_count", 0),
             },
         }
 
