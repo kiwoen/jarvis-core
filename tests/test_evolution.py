@@ -16,6 +16,8 @@ Covers:
 
 import pytest
 from jarvis.court.evolution import (
+    CrossoverMode,
+    EliteTurnoverMode,
     EvolutionAction,
     EvolutionEvent,
     EvolutionReport,
@@ -707,3 +709,207 @@ class TestElitism:
         actions, _ = sm._identify_probation_candidates()
         probated = {a.minister for a in actions}
         assert "丞相" not in probated
+
+
+# ── Adaptive Elite Turnover ─────────────────────────────────────────
+
+
+class TestAdaptiveEliteTurnover:
+    """精英更替速率自适应 — elite count adjusts to population dynamics."""
+
+    def _build_court(
+        self, sm, names_and_merits: list[tuple[str, float]]
+    ) -> None:
+        """Register ministers and set known merits via a mock board."""
+        class MockMeritBoard:
+            def compute_merit(self, name):
+                for n, m in names_and_merits:
+                    if n == name:
+                        return m
+                return 0
+
+            def get_probation_candidates(self):
+                return []
+
+        sm._merit_board = MockMeritBoard()
+        for name, _ in names_and_merits:
+            sm.register_minister(name)
+
+    def test_default_mode_is_adaptive(self):
+        """Default TURNOVER_MODE is ADAPTIVE."""
+        assert SurvivalMechanism.TURNOVER_MODE == EliteTurnoverMode.ADAPTIVE
+
+    def test_fixed_mode_keeps_unchanged_count(self):
+        """FIXED mode always returns the configured elitism_count."""
+        sm = SurvivalMechanism(
+            turnover_mode=EliteTurnoverMode.FIXED,
+            elitism_count=3,
+        )
+        data = [
+            ("A", True, 0.9), ("A", True, 0.9), ("A", True, 0.9),
+            ("B", True, 0.8), ("B", True, 0.8),
+            ("C", True, 0.7),
+        ]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+        for name in ["A", "B", "C", "D", "E", "F"]:
+            sm.register_minister(name)
+        # Force low diversity — FIXED mode ignores it
+        sm.diversity._diversity_score = 0.05
+        sm.run_evolution_cycle()
+        assert sm.get_elite_count() == 3
+
+    def test_adaptive_respects_bounds(self):
+        """Adaptive elite count always within [MIN_ELITES, MAX_ELITES]."""
+        for base_count in [1, 2, 3, 4, 5, 10]:
+            sm = SurvivalMechanism(
+                elitism_count=base_count,
+                min_elites=1,
+                max_elites=4,
+            )
+            self._build_court(sm, [
+                ("A", 50), ("B", 50), ("C", 50),
+                ("D", 50), ("E", 50),
+            ])
+            # Mid diversity + mid variance → typical case
+            sm.diversity._diversity_score = 0.5
+            count = sm._adaptive_elite_count()
+            assert 1 <= count <= 4, (
+                f"base={base_count} → count={count} not in [1,4]"
+            )
+
+    def test_low_diversity_protects_more(self):
+        """Low diversity → higher elite count (stability preservation)."""
+        sm = SurvivalMechanism(elitism_count=2, min_elites=1, max_elites=5)
+        self._build_court(sm, [
+            ("A", 80), ("B", 75), ("C", 70),
+            ("D", 65), ("E", 60),
+        ])
+        # High diversity → natural selection works, fewer elites
+        sm.diversity._diversity_score = 0.85
+        high_div_count = sm._adaptive_elite_count()
+
+        # Low diversity → protect more to prevent monoculture collapse
+        sm.diversity._diversity_score = 0.08
+        low_div_count = sm._adaptive_elite_count()
+
+        assert low_div_count >= high_div_count, (
+            f"low_diversity({low_div_count}) should be >= "
+            f"high_diversity({high_div_count})"
+        )
+
+    def test_high_merit_variance_protects_fewer(self):
+        """High merit variance → fewer elites (clear leaders exist)."""
+        sm = SurvivalMechanism(elitism_count=3, min_elites=1, max_elites=5)
+        # Low variance: everyone similar merit
+        self._build_court(sm, [
+            ("A", 50), ("B", 48), ("C", 52),
+            ("D", 49), ("E", 51),
+        ])
+        sm.diversity._diversity_score = 0.5
+        low_var_count = sm._adaptive_elite_count()
+
+        # High variance: one clear leader
+        self._build_court(sm, [
+            ("A", 95), ("B", 20), ("C", 15),
+            ("D", 10), ("E", 8),
+        ])
+        high_var_count = sm._adaptive_elite_count()
+
+        assert high_var_count <= low_var_count, (
+            f"high_variance({high_var_count}) should be <= "
+            f"low_variance({low_var_count})"
+        )
+
+    def test_small_court_reduces_elites(self):
+        """Small active court → fewer elites (don't protect half the court)."""
+        sm = SurvivalMechanism(elitism_count=3, min_elites=1, max_elites=5)
+        sm.diversity._diversity_score = 0.5
+
+        # Small court: 4 actives
+        self._build_court(sm, [
+            ("A", 60), ("B", 55), ("C", 50), ("D", 45),
+        ])
+        small_count = sm._adaptive_elite_count()
+
+        # Clear registrations, rebuild larger court
+        sm._statuses.clear()
+        sm._genomes.clear()
+        # Large court: 12 actives
+        self._build_court(sm, [
+            ("A", 60), ("B", 55), ("C", 50), ("D", 45),
+            ("E", 40), ("F", 35), ("G", 30), ("H", 25),
+            ("I", 20), ("J", 15), ("K", 10), ("L", 5),
+        ])
+        large_count = sm._adaptive_elite_count()
+
+        assert small_count <= large_count, (
+            f"small_court({small_count}) should be <= "
+            f"large_court({large_count})"
+        )
+
+    def test_elite_count_used_in_elite_set(self):
+        """The adaptive elite count actually governs _get_elite_set size."""
+        sm = SurvivalMechanism(
+            elitism_count=2, min_elites=1, max_elites=4,
+        )
+        self._build_court(sm, [
+            ("A", 80), ("B", 75), ("C", 70),
+            ("D", 65),
+        ])
+        # Force _current_elite_count = 3
+        sm._current_elite_count = 3
+        elites = sm._get_elite_set()
+        # A/B/C should be in (top 3, all above ELITE_MERIT_FLOOR=30)
+        assert "A" in elites
+        assert "B" in elites
+        assert "C" in elites
+        assert "D" not in elites
+        assert len(elites) == 3
+
+    def test_run_cycle_updates_elite_count_in_adaptive(self):
+        """run_evolution_cycle recomputes elite count in ADAPTIVE mode."""
+        sm = SurvivalMechanism(
+            elitism_count=3, min_elites=1, max_elites=3,
+            turnover_mode=EliteTurnoverMode.ADAPTIVE,
+        )
+        data = [
+            ("A", True, 0.8), ("B", True, 0.7), ("C", True, 0.6),
+            ("D", True, 0.6), ("E", True, 0.5),
+        ]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+        for name in ["A", "B", "C", "D", "E"]:
+            sm.register_minister(name)
+        sm.diversity._diversity_score = 0.5
+        initial_count = sm.get_elite_count()
+        assert initial_count == 3  # equals elitism_count before first cycle
+
+        sm.run_evolution_cycle()
+        after_count = sm.get_elite_count()
+        # Adaptive should have computed a value in bounds
+        assert 1 <= after_count <= 3
+
+    def test_fixed_mode_uses_elitism_count_in_elite_set(self):
+        """FIXED mode uses _elitism_count directly for elite selection."""
+        sm = SurvivalMechanism(
+            elitism_count=3,
+            turnover_mode=EliteTurnoverMode.FIXED,
+            min_elites=1,
+            max_elites=2,
+        )
+        data = [
+            ("A", True, 0.9), ("B", True, 0.8), ("C", True, 0.7),
+            ("D", True, 0.6), ("E", True, 0.5),
+        ]
+        mb = make_board_with_data(data)
+        sm._merit_board = mb
+        for name in ["A", "B", "C", "D", "E"]:
+            sm.register_minister(name)
+        # FIXED mode: _current_elite_count stays at _elitism_count
+        sm.run_evolution_cycle()
+        assert sm.get_elite_count() == 3
+
+        elites = sm._get_elite_set()
+        assert len(elites) == 3
+        assert {"A", "B", "C"} == elites

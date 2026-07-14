@@ -63,6 +63,19 @@ class CrossoverMode(Enum):
     SBX = auto()            # Simulated Binary Crossover (Deb & Agrawal 1995)
 
 
+class EliteTurnoverMode(Enum):
+    """Strategy for determining how many top ministers are elite-protected.
+
+    FIXED:    Always use the configured elitism_count.
+    ADAPTIVE: Dynamically adjust elite count per cycle based on population
+              diversity, merit variance, and court size. Protects more
+              elites when diversity is low; accelerates turnover when
+              natural selection is working well.
+    """
+    FIXED = auto()
+    ADAPTIVE = auto()
+
+
 @dataclass
 class EvolutionEvent:
     """A recorded evolution action for audit trail."""
@@ -141,6 +154,15 @@ class SurvivalMechanism:
     # Minimum merit required to qualify for elite protection
     ELITE_MERIT_FLOOR = 30
 
+    # ── Adaptive Elite Turnover ─────────────────────────────────────
+    # When TURNOVER_MODE is ADAPTIVE, these control the dynamic range
+    # of elite count.  The system adjusts _current_elite_count each cycle
+    # based on diversity, merit variance, and population size.
+    TURNOVER_MODE: EliteTurnoverMode = EliteTurnoverMode.ADAPTIVE
+    MIN_ELITES = 1          # Absolute floor — always protect at least 1
+    MAX_ELITES = 5          # Absolute ceiling — never protect more than 5
+    # ─────────────────────────────────────────────────────────────────
+
     # Probability of using crossover (vs clone-mutate) when filling vacancies
     CROSSOVER_RATE = 0.6
 
@@ -159,6 +181,9 @@ class SurvivalMechanism:
         crossover_rate: float = CROSSOVER_RATE,
         crossover_mode: CrossoverMode = CrossoverMode.SBX,
         sbx_eta: float = SBX_ETA,
+        turnover_mode: EliteTurnoverMode = TURNOVER_MODE,
+        min_elites: int = MIN_ELITES,
+        max_elites: int = MAX_ELITES,
     ) -> None:
         self._merit_board = merit_board
         self._registry = minister_registry or {}
@@ -173,6 +198,12 @@ class SurvivalMechanism:
         self._crossover_mode = crossover_mode
         self._sbx_eta = max(2.0, min(100.0, sbx_eta))
         self._mutation_scale = self.MUTATION_SCALE
+
+        # Adaptive elite turnover
+        self._turnover_mode = turnover_mode
+        self._min_elites = max(1, min_elites)
+        self._max_elites = max(self._min_elites, max_elites)
+        self._current_elite_count = self._elitism_count  # updated each cycle
 
         # Diversity monitoring — detects population monoculture
         self.diversity = DiversityMonitor()
@@ -222,6 +253,9 @@ class SurvivalMechanism:
         actions: list[EvolutionEvent] = []
         systemic_issues: list[str] = []
         recommendations: list[str] = []
+
+        if self._turnover_mode == EliteTurnoverMode.ADAPTIVE:
+            self._current_elite_count = self._adaptive_elite_count()
 
         # Step 1: Demote critically-low-merit active ministers to shadow
         demotions = self._demote_underperformers()
@@ -1070,17 +1104,70 @@ class SurvivalMechanism:
     def _get_elite_set(self) -> set[str]:
         """Return the set of elite (protected) minister names.
 
-        Elites are the top ELITISM_COUNT ministers by merit,
+        Elites are the top elite_count ministers by merit,
         but only those with merit >= ELITE_MERIT_FLOOR.
-        This prevents protecting low-performers just because
-        they happen to be the best in a weak court.
+        In ADAPTIVE mode, elite_count is recomputed each cycle
+        based on diversity, merit variance, and population size.
         """
         threshold = max(0, self.ELITE_MERIT_FLOOR)
-        top_n = self._find_top_n(self._elitism_count)
+        elite_count = self._current_elite_count
+        top_n = self._find_top_n(elite_count)
         return {
             name for name, merit in top_n
             if merit >= threshold
         }
+
+    def _adaptive_elite_count(self) -> int:
+        """Compute the dynamic elite count for this evolution cycle.
+
+        Balances three signals:
+            1. Diversity  — low diversity → protect more elites (stability)
+            2. Merit σ    — low variance  → more elites (no clear leader)
+            3. Court size — large court   → more slots to protect
+
+        Returns an integer clamped to [MIN_ELITES, MAX_ELITES].
+        """
+        base = self._elitism_count
+
+        # ── Signal 1: Diversity ──────────────────────────────────────
+        try:
+            d_score = self.diversity.get_diversity_score()
+        except Exception:
+            d_score = 0.5
+        # When diversity is low (<0.3), we want MORE elite protection.
+        # When diversity is high (>0.7), natural selection works → fewer.
+        diversity_factor = max(0.3, 1.0 - d_score) / 0.7
+
+        # ── Signal 2: Merit variance ─────────────────────────────────
+        actives = [
+            self._merit_board.compute_merit(name)
+            for name, s in self._statuses.items()
+            if s == MinisterStatus.ACTIVE and self._merit_board
+        ]
+        if len(actives) >= 2:
+            mean = sum(actives) / len(actives)
+            var = sum((m - mean) ** 2 for m in actives) / len(actives)
+            # Normalize: var ~ 0..2500 for merits roughly 0..100
+            norm_var = min(1.0, var / 1000.0)
+        else:
+            norm_var = 0.5
+        # High variance → clear leaders → fewer elites needed.
+        # Low variance  → everyone similar → protect larger elite pool.
+        variance_factor = max(0.3, 1.0 - norm_var) / 0.7
+
+        # ── Signal 3: Court size ─────────────────────────────────────
+        active_count = sum(
+            1 for s in self._statuses.values() if s == MinisterStatus.ACTIVE
+        )
+        # Scale linearly: size 4 → factor 0.5, size 12 → factor 1.0
+        size_factor = max(0.4, min(1.0, active_count / 12.0))
+
+        # ── Composite score ──────────────────────────────────────────
+        # Weighted equally; tune via class constants if needed.
+        composite = (diversity_factor + variance_factor + size_factor) / 3.0
+        adaptive = round(base * composite)
+
+        return max(self._min_elites, min(self._max_elites, adaptive))
 
     def _can_eliminate(self) -> bool:
         """Check if we can eliminate without going below minimum court size."""
@@ -1154,6 +1241,14 @@ class SurvivalMechanism:
     def get_archive(self) -> list[MinisterGenome]:
         """Return archived (eliminated) genomes for analysis."""
         return list(self._archive)
+
+    def get_elite_count(self) -> int:
+        """Return the current elite count (dynamic in ADAPTIVE mode)."""
+        return self._current_elite_count
+
+    def get_turnover_mode(self) -> EliteTurnoverMode:
+        """Return the current elite turnover strategy."""
+        return self._turnover_mode
 
     def apply_genome_to_minister(self, minister: Any, genome: MinisterGenome) -> None:
         """Apply genome parameters to an actual Minister instance.
