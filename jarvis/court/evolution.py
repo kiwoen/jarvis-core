@@ -1742,11 +1742,15 @@ class SurvivalMechanism:
     def apply_genome_to_minister(self, minister: Any, genome: MinisterGenome) -> None:
         """Apply genome parameters to an actual Minister instance.
 
-        This bridges the evolution engine with the runtime Minister objects.
+        Uses the Minister's set_genome() + set_genome_injector() to establish
+        the full genome→LLM injection pipeline, closing the
+        「breeding → evolution → behavior → merit → selection」 loop.
         """
-        if hasattr(minister, "_current_temperature"):
-            minister._current_temperature = genome.temperature
-        if hasattr(minister, "_confidence_baseline"):
-            minister._confidence_baseline = genome.confidence_baseline
-        logger.debug("[Evolution] Applied genome to %s: T=%.2f C=%.2f",
+        from jarvis.court.genome_injector import GenomeInjector
+
+        if hasattr(minister, "set_genome"):
+            minister.set_genome(genome)
+        if hasattr(minister, "set_genome_injector"):
+            minister.set_genome_injector(GenomeInjector())
+        logger.debug("[Evolution] Applied genome+injector to %s: T=%.2f C=%.2f",
                      genome.name, genome.temperature, genome.confidence_baseline)

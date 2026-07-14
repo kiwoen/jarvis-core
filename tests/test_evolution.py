@@ -522,18 +522,29 @@ class TestEdgeCases:
         assert remaining <= 12  # Reasonable upper bound after cloning
 
     def test_apply_genome_to_minister_object(self):
+        """Genome injection uses set_genome() + set_genome_injector()."""
         sm = SurvivalMechanism()
         sm.register_minister("丞相", "writing", temperature=0.8, confidence_baseline=0.90)
 
         class MockMinister:
-            _current_temperature = 0.5
-            _confidence_baseline = 0.5
+            def __init__(self):
+                self.genome_received = None
+                self.injector_received = None
+
+            def set_genome(self, genome):
+                self.genome_received = genome
+
+            def set_genome_injector(self, injector):
+                self.injector_received = injector
 
         minister = MockMinister()
         genome = sm.get_genome("丞相")
         sm.apply_genome_to_minister(minister, genome)
-        assert minister._current_temperature == 0.8
-        assert minister._confidence_baseline == 0.90
+
+        assert minister.genome_received is genome
+        assert minister.genome_received.temperature == 0.8
+        assert minister.genome_received.confidence_baseline == 0.90
+        assert minister.injector_received is not None
 
     def test_status_query_unknown_minister(self):
         sm = SurvivalMechanism()

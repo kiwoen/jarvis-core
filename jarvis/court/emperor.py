@@ -121,11 +121,23 @@ class ImperialCourt:
     # ------------------------------------------------------------------
 
     def install_minister(self, minister: Minister) -> None:
-        """Appoint a minister to the court."""
+        """Appoint a minister to the court.
+
+        Automatically injects the minister's evolvable genome
+        (from SurvivalMechanism) into the Minister instance so that
+        genome traits affect LLM behavior on every subsequent call.
+        """
         if self.knowledge_graph is not None:
             minister.set_knowledge_graph(self.knowledge_graph)
         self.ministers[minister.name] = minister
         self.survival.register_minister(minister.name, minister.archetype)
+
+        # Inject genome if one exists (bred/spawned ministers get specific
+        # genomes; initial factory ministers get defaults from register_minister)
+        genome = self.survival.get_genome(minister.name)
+        if genome is not None:
+            self.survival.apply_genome_to_minister(minister, genome)
+
         logger.info("[Emperor] Appointed %s (%s) to the court",
                      minister.name, minister.archetype)
 
