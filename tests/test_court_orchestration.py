@@ -264,3 +264,50 @@ class TestCourtMetrics:
 
         assert metrics["decree_count"] == 1
         assert metrics["minister_count"] == 8
+
+
+# ── Genome Injection Integration ───────────────────────────────────────
+
+
+class TestGenomeInjection:
+    """Verify genome→LLM injection pipeline at court integration level."""
+
+    def test_factory_ministers_have_genome_and_injector(self):
+        """After install_ministers_from_factory, every minister must have
+        genome + genome_injector injected for LLM behavior modulation."""
+        court = ImperialCourt()
+        court.install_ministers_from_factory()
+
+        from jarvis.court.genome_injector import GenomeInjector
+
+        for name, minister in court.ministers.items():
+            genome = minister.genome
+            assert genome is not None, f"{name} missing genome"
+            assert genome.name == name, f"{name} genome name mismatch: {genome.name}"
+            assert 0.1 <= genome.temperature <= 1.0, f"{name} temperature out of range: {genome.temperature}"
+
+            injector = minister._genome_injector
+            assert injector is not None, f"{name} missing genome_injector"
+            assert isinstance(injector, GenomeInjector), (
+                f"{name} genome_injector is {type(injector).__name__}, expected GenomeInjector"
+            )
+
+    def test_genome_injection_idempotent(self):
+        """Reinstalling a minister should update genome without breaking."""
+        from jarvis.court.ministers import create_ministers
+
+        court = ImperialCourt()
+        ministers = create_ministers()
+        first = ministers[0]
+
+        # Install first time
+        court.install_minister(first)
+        g1 = first.genome
+        assert g1 is not None
+
+        # Install again (backfill path)
+        court.install_minister(first)
+        g2 = first.genome
+        assert g2 is not None
+        # Same minister, same genome reference after re-registration
+        assert g2.name == first.name
