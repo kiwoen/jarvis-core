@@ -40,6 +40,15 @@ from jarvis.court.sliding_merit import (  # noqa: E402
     WindowMode,
 )
 from jarvis.court.merit_board import MeritBoard  # noqa: E402
+from jarvis.court.breeding import (  # noqa: E402
+    AutoBreeder,
+    BreedingReport,
+    BreedingCandidate,
+    BreedingStrategy,
+    GapAnalyzer,
+    StrategySelector,
+    GenomeGenerator,
+)
 
 
 class MinisterStatus(Enum):
@@ -248,6 +257,15 @@ class SurvivalMechanism:
     ENABLE_SLIDING_MERIT = True
     SLIDING_WINDOW_SIZE = 50       # dispatches to consider
     SLIDING_WINDOW_MODE: WindowMode = WindowMode.HARD_CUTOFF
+
+    # ── AutoBreeder ─────────────────────────────────────────────────
+    # When ENABLE_AUTO_BREEDING is True, the survival mechanism
+    # proactively breeds new ministers based on capability gaps,
+    # diversity deficits, and merit trends — closing the
+    # 「breed → evaluate → survive」 loop.
+    ENABLE_AUTO_BREEDING = True
+    BREEDING_COOLDOWN = 5          # cycles between breeding rounds
+    MAX_BREED_PER_CYCLE = 3        # new ministers per breeding round
     # ─────────────────────────────────────────────────────────────────
 
     # Probability of using crossover (vs clone-mutate) when filling vacancies
@@ -276,6 +294,12 @@ class SurvivalMechanism:
         enable_sliding_merit: bool = ENABLE_SLIDING_MERIT,
         sliding_window_size: int = SLIDING_WINDOW_SIZE,
         sliding_window_mode: WindowMode = SLIDING_WINDOW_MODE,
+        enable_auto_breeding: bool = ENABLE_AUTO_BREEDING,
+        breeding_cooldown: int = BREEDING_COOLDOWN,
+        max_breed_per_cycle: int = MAX_BREED_PER_CYCLE,
+        gap_analyzer: Optional[GapAnalyzer] = None,
+        strategy_selector: Optional[StrategySelector] = None,
+        genome_generator: Optional[GenomeGenerator] = None,
     ) -> None:
         # ── Sliding merit: auto-wrap if enabled and board is plain MeritBoard ──
         if (
@@ -324,6 +348,20 @@ class SurvivalMechanism:
         self._task_context = TaskContext()  # updated per cycle by orchestrator
         self._effective_mutation_scale = self._mutation_scale
         self._effective_sbx_eta = self._sbx_eta
+
+        # ── AutoBreeder ──────────────────────────────────────────
+        self._enable_auto_breeding = enable_auto_breeding
+        self._auto_breeder: Optional[AutoBreeder] = None
+        self._breeding_history: list[BreedingReport] = []
+        if self._enable_auto_breeding:
+            self._auto_breeder = AutoBreeder(
+                gap_analyzer=gap_analyzer,
+                strategy_selector=strategy_selector,
+                genome_generator=genome_generator,
+                breeding_cooldown=breeding_cooldown,
+                max_per_cycle=max_breed_per_cycle,
+            )
+            self._wire_breeder_providers()
 
     # ------------------------------------------------------------------
     # Registration
@@ -418,6 +456,184 @@ class SurvivalMechanism:
             self._effective_sbx_eta,
         )
 
+    # ------------------------------------------------------------------
+    # AutoBreeder integration
+    # ------------------------------------------------------------------
+
+    def _wire_breeder_providers(self) -> None:
+        """Wire AutoBreeder signal providers from current court state."""
+        if not self._auto_breeder:
+            return
+
+        self._auto_breeder.set_diversity_provider(
+            lambda: self.diversity.get_latest_score()
+        )
+        self._auto_breeder.set_merit_provider(
+            lambda m: self._get_minister_merit(m)
+        )
+
+    def _get_minister_merit(self, minister: str) -> float:
+        """Get merit score for a minister, with fallback."""
+        try:
+            if self._merit_board is not None:
+                # SlidingMeritBoard uses compute_merit, MeritBoard uses get_score
+                if hasattr(self._merit_board, "compute_merit"):
+                    return self._merit_board.compute_merit(minister)
+                return self._merit_board.get_score(minister)
+        except Exception:
+            pass
+
+        return 0.0
+
+    def set_breeder_expertise_provider(
+        self, provider: callable,
+    ) -> None:
+        """Set domain expertise provider for the AutoBreeder.
+
+        Called by CourtOrchestrator to inject minister→domain mapping.
+        """
+        if self._auto_breeder:
+            self._auto_breeder.set_expertise_provider(provider)
+
+    def _breed_ministers(
+        self,
+        actions: list[EvolutionEvent],
+        systemic_issues: list[str],
+        recommendations: list[str],
+    ) -> None:
+        """Step 9: Run AutoBreeder to fill capability gaps proactively.
+
+        This closes the 「breed → evaluate → survive」 loop by
+        creating new ministers with genomes optimized for detected
+        domain weaknesses before they become critical.
+        """
+        if not self._auto_breeder:
+            return
+
+        # Collect current court state for breeding signals
+        active = self.get_active_ministers()
+        if not active:
+            return
+
+        elite = list(self._get_elite_set())
+        parent_genomes = {
+            m: self._genomes_to_dict(g)
+            for m in active
+            if (g := self._genomes.get(m)) is not None
+        }
+
+        # Execute breeding cycle
+        report = self._auto_breeder.breed(
+            active_ministers=list(active),
+            elite_ministers=elite,
+            parent_genomes=parent_genomes,
+        )
+
+        self._breeding_history.append(report)
+
+        if not report.candidates_created:
+            return
+
+        # Register newly bred ministers as shadow (train before voting)
+        for i, (name, candidate) in enumerate(
+            zip(report.candidates_created, report.candidates_proposed)
+        ):
+            genome = (
+                candidate.genome_template
+                or self._auto_breeder.genome_generator.generate(
+                    candidate,
+                )
+            )
+            self._register_bred_minister(
+                name=name,
+                domain=candidate.target_domain,
+                genome=genome,
+                strategy=candidate.strategy,
+                parent=candidate.parent_minister or "",
+            )
+            actions.append(EvolutionEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                minister=name,
+                action=EvolutionAction.SPAWN_SPECIALIST,
+                reason=(
+                    f"AutoBreeder {candidate.strategy.name} for "
+                    f"domain '{candidate.target_domain}'"
+                ),
+                previous_merit=0.0,
+                new_merit=0.0,
+                details={
+                    "strategy": candidate.strategy.name,
+                    "domain": candidate.target_domain,
+                    "parent": candidate.parent_minister or "auto",
+                },
+            ))
+
+        strategies_str = ", ".join(
+            f"{s.name}={c}"
+            for s, c in report.strategies_used.items()
+        )
+        gaps_str = ", ".join(
+            f"{g.domain}({g.severity:.2f})"
+            for g in report.gaps_detected[:3]
+        )
+        systemic_issues.append(
+            f"AutoBreeder 填补 {len(report.candidates_created)} 个能力缺口 "
+            f"[{gaps_str}]，策略: {strategies_str}"
+        )
+        recommendations.append(
+            f"已自动育种 {len(report.candidates_created)} 名 shadow 大臣，"
+            f"需等待训练后可提拔"
+        )
+
+    def _register_bred_minister(
+        self,
+        name: str,
+        domain: str,
+        genome: dict[str, float],
+        strategy: BreedingStrategy,
+        parent: str = "",
+    ) -> None:
+        """Register a minister created by AutoBreeder.
+
+        Bred ministers enter as SHADOW — they must prove themselves
+        before being promoted to ACTIVE by the normal evolution cycle.
+        """
+        generation = 0
+        if parent and parent in self._genomes:
+            generation = self._genomes[parent].generation + 1
+
+        self._statuses[name] = MinisterStatus.SHADOW
+        self._probation_cycles[name] = 0
+        self._genomes[name] = MinisterGenome(
+            name=name,
+            domain=domain,
+            temperature=genome.get("temperature", 0.5),
+            confidence_baseline=genome.get("confidence_baseline", 0.80),
+            exploration_rate=genome.get("exploration_rate", 0.3),
+            conservatism=genome.get("conservatism", 0.5),
+            specialization_weight=1.0,
+            generation=generation,
+            parent=parent,
+        )
+        logger.info(
+            "AutoBreeder registered shadow minister '%s' "
+            "domain=%s strategy=%s gen=%d parent=%s",
+            name, domain, strategy.name, generation,
+            parent or "none",
+        )
+
+    @staticmethod
+    def _genomes_to_dict(genome: MinisterGenome) -> dict[str, float]:
+        """Convert MinisterGenome to dict for AutoBreeder consumption."""
+        return {
+            "temperature": genome.temperature,
+            "confidence_baseline": genome.confidence_baseline,
+            "creativity": getattr(genome, "exploration_rate", 0.3),
+            "thoroughness": 1.0 - getattr(genome, "exploration_rate", 0.3),
+            "speed": 0.5,
+            "social_intelligence": 0.5,
+        }
+
     def run_evolution_cycle(self) -> EvolutionReport:
         """Execute one complete evolution cycle.
 
@@ -476,10 +692,6 @@ class SurvivalMechanism:
             1 for s in self._statuses.values()
             if s == MinisterStatus.ELIMINATED
         )
-        spawn_count = sum(
-            1 for a in actions
-            if a.action in (EvolutionAction.CLONE_MUTATE, EvolutionAction.SPAWN_SPECIALIST)
-        )
 
         # Step 8: Measure diversity and trigger catastrophe if needed
         cat_events = self._maybe_run_catastrophe()
@@ -488,6 +700,15 @@ class SurvivalMechanism:
             recommendations.append(
                 "种群基因多样性过低，已触发大灾变重组"
             )
+
+        # Step 9: Breed new ministers proactively (close breed→eval→survive)
+        self._breed_ministers(actions, systemic_issues, recommendations)
+
+        # Recalculate spawn count after breeding may have added spawns
+        spawn_count = sum(
+            1 for a in actions
+            if a.action in (EvolutionAction.CLONE_MUTATE, EvolutionAction.SPAWN_SPECIALIST)
+        )
 
         return EvolutionReport(
             cycle=self._cycle_count,
@@ -1042,6 +1263,18 @@ class SurvivalMechanism:
     def get_catastrophe_history(self) -> list[CatastropheReport]:
         """Return catastrophe event history."""
         return list(self.diversity.catastrophes)
+
+    def get_auto_breeder(self) -> Optional[AutoBreeder]:
+        """Access the AutoBreeder instance (None if disabled)."""
+        return self._auto_breeder
+
+    def get_breeding_history(self) -> list[BreedingReport]:
+        """Return all breeding reports since court creation."""
+        return list(self._breeding_history)
+
+    def is_breeding_enabled(self) -> bool:
+        """Check if auto-breeding is active."""
+        return self._enable_auto_breeding and self._auto_breeder is not None
 
     # ------------------------------------------------------------------
     # Genome operations

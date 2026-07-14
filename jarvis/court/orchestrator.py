@@ -316,6 +316,16 @@ class CourtOrchestrator(ImperialCourt):
             lambda m: self.ministers[m].archetype if m in self.ministers else "unknown"
         )
 
+        # Breeder expertise provider: wire domain mapping for AutoBreeder
+        if (
+            hasattr(self.survival, "is_breeding_enabled")
+            and self.survival.is_breeding_enabled()
+            and hasattr(self.survival, "set_breeder_expertise_provider")
+        ):
+            self.survival.set_breeder_expertise_provider(
+                lambda: self.get_domain_expertise()
+            )
+
     def _get_fitness(self, minister: str) -> float:
         """Get normalized fitness for a minister.
 

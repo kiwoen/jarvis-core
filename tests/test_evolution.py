@@ -1038,3 +1038,354 @@ class TestSlidingMeritIntegration:
         # success_rate = 5/10 = 0.5 → merit ≈ 46.2, well below full-history 64.2
         merit = sm.get_sliding_merit_board().compute_merit("丞相")
         assert merit < 50, f"Expected low merit with recent failures, got {merit}"
+
+
+# ── AutoBreeder Integration ─────────────────────────────────────────
+
+class TestAutoBreederIntegration:
+    """AutoBreeder wired into SurvivalMechanism evolution cycle."""
+
+    def test_auto_breeder_created_when_enabled(self):
+        """AutoBreeder is instantiated when ENABLE_AUTO_BREEDING=True."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(merit_board=mb, enable_auto_breeding=True)
+        assert sm.is_breeding_enabled()
+        assert sm.get_auto_breeder() is not None
+
+    def test_auto_breeder_none_when_disabled(self):
+        """No AutoBreeder when explicitly disabled."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(merit_board=mb, enable_auto_breeding=False)
+        assert not sm.is_breeding_enabled()
+        assert sm.get_auto_breeder() is None
+
+    def test_breeding_history_starts_empty(self):
+        """Breeding history list starts empty."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(merit_board=mb)
+        assert sm.get_breeding_history() == []
+
+    def test_breed_cycle_respects_cooldown(self):
+        """After breeding, cooldown prevents immediate re-breeding."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=5,  # 5 cycles between breeds
+            max_breed_per_cycle=3,
+        )
+        # Small court: 3 ministers → strong gaps → breeding fires on cycle 1
+        for name, domain in [
+            ("丞相", "writing"), ("太史令", "search"), ("工部尚书", "code"),
+        ]:
+            sm.register_minister(name, domain)
+
+        sm.set_breeder_expertise_provider(
+            lambda: {
+                "丞相": {"writing": 0.8}, "太史令": {"search": 0.8},
+                "工部尚书": {"code": 0.8},
+            }
+        )
+
+        # First breed fires (cooldown counter initialized to breeding_cooldown)
+        report1 = sm.run_evolution_cycle()
+        bred1 = sum(1 for a in report1.actions_taken if "AutoBreeder" in a.reason)
+        assert bred1 >= 1, "First cycle should breed (cooldown initially satisfied)"
+
+        # Second cycle: cooldown now 0 (< 5) → no breeding
+        report2 = sm.run_evolution_cycle()
+        bred2 = sum(1 for a in report2.actions_taken if "AutoBreeder" in a.reason)
+        assert bred2 == 0, "Second cycle within cooldown should not breed"
+
+    def test_breed_after_cooldown_fills_gaps(self):
+        """After cooldown, AutoBreeder creates ministers for gaps."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,  # allow immediate breeding
+            max_breed_per_cycle=3,
+        )
+        # Register only 6 ministers across 3 of 13 known domains
+        for name, domain in [
+            ("丞相", "writing"), ("御史大夫", "writing"),
+            ("太史令", "search"), ("工部尚书", "code"),
+            ("太常", "multimodal"), ("大司农", "finance"),
+        ]:
+            sm.register_minister(name, domain)
+
+        # Wire expertise provider (simulates orchestrator wiring)
+        def fake_expertise():
+            result = {}
+            for m, d in [
+                ("丞相", "writing"), ("御史大夫", "writing"),
+                ("太史令", "search"), ("工部尚书", "code"),
+                ("太常", "multimodal"), ("大司农", "finance"),
+            ]:
+                result[m] = {d: 0.8, "general": 0.3}
+            return result
+
+        sm.set_breeder_expertise_provider(fake_expertise)
+
+        report = sm.run_evolution_cycle()
+        breeding_actions = [
+            a for a in report.actions_taken
+            if "AutoBreeder" in a.reason
+        ]
+        assert len(breeding_actions) > 0, (
+            "Expected AutoBreeder to create ministers for gaps"
+        )
+
+        # Verify bred ministers are registered as SHADOW
+        bred_names = [a.minister for a in breeding_actions]
+        for name in bred_names:
+            assert sm.get_status(name) == MinisterStatus.SHADOW
+
+    def test_breed_skip_when_no_gaps(self):
+        """No coverage/quality gaps when all 13 domains are well-covered.
+
+        Note: EXPLORE may fire due to low gene diversity, but coverage and
+        merit gaps should be zero since all domains have active ministers.
+        """
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=3,
+        )
+
+        domains = [
+            "engineering", "research", "security", "finance",
+            "personal", "health", "home", "general", "core",
+            "creative", "legal", "education", "entertainment",
+        ]
+        for i, d in enumerate(domains):
+            mb.record_dispatch(d, f"e_{d}", "task", True, 0.90)
+            sm.register_minister(
+                d, d,
+                temperature=0.5 + (i * 0.03),
+                confidence_baseline=0.75 + (i * 0.015),
+            )
+
+        sm.set_breeder_expertise_provider(
+            lambda: {d: {d: 1.0} for d in domains}
+        )
+        report = sm.run_evolution_cycle()
+        breeding_actions = [
+            a for a in report.actions_taken
+            if "AutoBreeder" in a.reason
+        ]
+        # EXPLORE strategy is acceptable (diversity-driven),
+        # but SPECIALIST/SPECIALIZE would indicate coverage gaps
+        for a in breeding_actions:
+            if "strategy" in a.details:
+                assert a.details["strategy"] in ("EXPLORE",), (
+                    f"Expected EXPLORE only, got {a.details['strategy']}"
+                )
+
+    def test_breed_reports_systemic_issues(self):
+        """Systemic issues in report include breeding info."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=2,
+        )
+        for name, domain in [
+            ("丞相", "writing"), ("太史令", "search"),
+        ]:
+            sm.register_minister(name, domain)
+
+        sm.set_breeder_expertise_provider(
+            lambda: {
+                "丞相": {"writing": 0.8, "general": 0.3},
+                "太史令": {"search": 0.8, "general": 0.3},
+            }
+        )
+        report = sm.run_evolution_cycle()
+
+        # At least one systemic issue mentions AutoBreeder
+        breeder_issues = [
+            i for i in report.systemic_issues
+            if "AutoBreeder" in i
+        ]
+        assert len(breeder_issues) > 0
+
+        # Recommendations should mention 育种
+        breeder_recs = [
+            r for r in report.recommendations
+            if "育种" in r
+        ]
+        assert len(breeder_recs) > 0
+
+    def test_bred_minister_has_correct_genome_fields(self):
+        """Genome fields from breeding are correctly mapped to MinisterGenome."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=2,
+        )
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("太史令", "search")
+
+        sm.set_breeder_expertise_provider(
+            lambda: {
+                "丞相": {"writing": 0.8, "general": 0.3},
+                "太史令": {"search": 0.8, "general": 0.3},
+            }
+        )
+        sm.run_evolution_cycle()
+
+        # Find a bred minister and verify genome
+        all_names = sm.get_active_ministers() + sm.get_shadow_ministers()
+        bred = None
+        for name in all_names:
+            if name not in {"丞相", "太史令"}:
+                bred = name
+                break
+        if bred:
+            genome = sm._genomes[bred]
+            assert 0.01 <= genome.temperature <= 0.99
+            assert 0.01 <= genome.confidence_baseline <= 0.99
+            assert genome.domain != ""
+
+    def test_breed_generation_increments(self):
+        """Child generation = parent.generation + 1."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=1,
+        )
+        sm.register_minister("丞相", "writing")
+
+        # Set a parent generation explicitly
+        sm._genomes["丞相"].generation = 5
+
+        # Force breeding from 丞相 as parent
+        class ForceSpecialize:
+            """Forces SPECIALIZE strategy using 丞相 as parent."""
+
+            @staticmethod
+            def select(gaps, elites):
+                from jarvis.court.breeding import BreedingCandidate, BreedingStrategy
+                return [BreedingCandidate(
+                    target_domain="legal",
+                    strategy=BreedingStrategy.SPECIALIZE,
+                    genome_template=None,
+                    parent_minister="丞相",
+                    reasoning="test",
+                )]
+
+        breeder = sm.get_auto_breeder()
+        from jarvis.court.breeding import StrategySelector
+        breeder.strategy_selector = ForceSpecialize()
+        breeder._cycles_since_breed = breeder.breeding_cooldown
+
+        sm.set_breeder_expertise_provider(
+            lambda: {"丞相": {"writing": 0.8, "general": 0.3}}
+        )
+
+        report = sm.run_evolution_cycle()
+
+        # Find the bred minister
+        bred_names = [
+            a.minister for a in report.actions_taken
+            if "AutoBreeder" in a.reason
+        ]
+        if bred_names:
+            bred = bred_names[0]
+            child_gen = sm._genomes[bred]
+            assert child_gen.generation == 6  # parent(5) + 1
+            assert child_gen.parent == "丞相"
+
+    def test_expertise_provider_update(self):
+        """set_breeder_expertise_provider replaces the provider."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(merit_board=mb)
+
+        called_with = []
+
+        def first_provider():
+            called_with.append("first")
+            return {"丞相": {"writing": 0.8}}
+
+        def second_provider():
+            called_with.append("second")
+            return {"太史令": {"search": 0.8}}
+
+        sm.set_breeder_expertise_provider(first_provider)
+        sm.set_breeder_expertise_provider(second_provider)
+
+        # Trigger provider access via _gather_expertise
+        breeder = sm.get_auto_breeder()
+        breeder._expertise_provider()
+        assert "second" in called_with
+        assert "first" not in called_with
+
+    def test_disabled_breeder_skips_breeding(self):
+        """When enable_auto_breeding=False, no breeding even after cooldown."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            enable_auto_breeding=False,
+            breeding_cooldown=0,
+        )
+        sm.register_minister("丞相", "writing")
+
+        report = sm.run_evolution_cycle()
+        breeding_actions = [
+            a for a in report.actions_taken
+            if "AutoBreeder" in a.reason
+        ]
+        assert len(breeding_actions) == 0
+
+    def test_breeding_history_accumulates(self):
+        """Breeding history grows across multiple cycles."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=2,
+        )
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("太史令", "search")
+
+        sm.set_breeder_expertise_provider(
+            lambda: {
+                "丞相": {"writing": 0.8, "general": 0.3},
+                "太史令": {"search": 0.8, "general": 0.3},
+            }
+        )
+
+        sm.run_evolution_cycle()
+        history_after_one = len(sm.get_breeding_history())
+        assert history_after_one >= 1
+
+        sm.run_evolution_cycle()
+        history_after_two = len(sm.get_breeding_history())
+        assert history_after_two >= history_after_one
+
+    def test_breed_spawn_count_reflected(self):
+        """new_spawns in EvolutionReport includes bred ministers."""
+        mb = MeritBoard()
+        sm = SurvivalMechanism(
+            merit_board=mb,
+            breeding_cooldown=0,
+            max_breed_per_cycle=3,
+        )
+        sm.register_minister("丞相", "writing")
+        sm.register_minister("太史令", "search")
+
+        sm.set_breeder_expertise_provider(
+            lambda: {
+                "丞相": {"writing": 0.8, "general": 0.3},
+                "太史令": {"search": 0.8, "general": 0.3},
+            }
+        )
+
+        report = sm.run_evolution_cycle()
+        breeding_spawns = sum(
+            1 for a in report.actions_taken
+            if "AutoBreeder" in a.reason
+        )
+        assert report.new_spawns >= breeding_spawns
