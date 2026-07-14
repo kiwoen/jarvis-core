@@ -27,7 +27,10 @@ import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jarvis.court.config import SurvivalConfig
 
 logger = logging.getLogger("jarvis.court.evolution")
 
@@ -432,6 +435,43 @@ class SurvivalMechanism:
                 logger.info(
                     "Loaded %d genomes from %s", len(loaded), genome_path,
                 )
+
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(
+        cls,
+        config: "SurvivalConfig",
+        merit_board: Any = None,
+        minister_registry: Optional[dict[str, Any]] = None,
+    ) -> "SurvivalMechanism":
+        """Create a SurvivalMechanism from a declarative SurvivalConfig.
+
+        This is the recommended factory method — it centralises all
+        parameter mapping so callers don't need to know about enum
+        conversions or internal defaults.
+        """
+        return cls(
+            merit_board=merit_board,
+            minister_registry=minister_registry,
+            elitism_count=config.elitism_count,
+            crossover_rate=config.crossover_rate,
+            crossover_mode=config.crossover_mode_enum,
+            sbx_eta=config.sbx_eta,
+            turnover_mode=config.turnover_mode_enum,
+            min_elites=config.min_elites,
+            max_elites=config.max_elites,
+            rate_mode=config.rate_mode_enum,
+            enable_sliding_merit=config.enable_sliding_merit,
+            sliding_window_size=config.sliding_window_size,
+            sliding_window_mode=config.sliding_window_mode_enum,
+            enable_auto_breeding=config.enable_auto_breeding,
+            breeding_cooldown=config.breeding_cooldown,
+            max_breed_per_cycle=config.max_breed_per_cycle,
+            genome_path=config.genome_path or None,
+        )
 
     # ------------------------------------------------------------------
     # Registration
