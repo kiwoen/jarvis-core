@@ -39,6 +39,7 @@ from jarvis.court.diversity import (
     DiversitySnapshot,
 )
 from jarvis.court.evolution import (
+    CrossoverMode,
     EvolutionAction,
     EvolutionEvent,
     EvolutionReport,
@@ -60,6 +61,7 @@ __all__ = [
     "EvolutionReport",
     "ImperialCourt",
     "CourtRecord",
+    "CrossoverMode",
     "Memorial",
     "Minister",
     "MinisterGenome",

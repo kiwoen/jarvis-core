@@ -57,6 +57,12 @@ class EvolutionAction(Enum):
     NO_ACTION = auto()
 
 
+class CrossoverMode(Enum):
+    """Available crossover (recombination) strategies for real-coded GA."""
+    UNIFORM = auto()        # Random gene-by-gene selection from parents
+    SBX = auto()            # Simulated Binary Crossover (Deb & Agrawal 1995)
+
+
 @dataclass
 class EvolutionEvent:
     """A recorded evolution action for audit trail."""
@@ -141,12 +147,18 @@ class SurvivalMechanism:
     # Mutation rate scaling factor (applied to genomic mutation deltas)
     MUTATION_SCALE = 1.0
 
+    # SBX distribution index (η_c): higher → offspring closer to parents
+    # Range: 2–100.  Default 15 is balanced.  Lower values → more exploration.
+    SBX_ETA = 15.0
+
     def __init__(
         self,
         merit_board: Any = None,
         minister_registry: Optional[dict[str, Any]] = None,
         elitism_count: int = ELITISM_COUNT,
         crossover_rate: float = CROSSOVER_RATE,
+        crossover_mode: CrossoverMode = CrossoverMode.SBX,
+        sbx_eta: float = SBX_ETA,
     ) -> None:
         self._merit_board = merit_board
         self._registry = minister_registry or {}
@@ -158,6 +170,8 @@ class SurvivalMechanism:
         self._cycle_count = 0
         self._elitism_count = max(1, elitism_count)
         self._crossover_rate = max(0.0, min(1.0, crossover_rate))
+        self._crossover_mode = crossover_mode
+        self._sbx_eta = max(2.0, min(100.0, sbx_eta))
         self._mutation_scale = self.MUTATION_SCALE
 
         # Diversity monitoring — detects population monoculture
@@ -828,15 +842,22 @@ class SurvivalMechanism:
         parent2: MinisterGenome,
         child_name: str,
     ) -> MinisterGenome:
-        """Create offspring via uniform crossover of two parents.
+        """Create offspring via crossover of two parents.
 
-        Each gene has 50% chance of coming from either parent.
-        Domain: inherited from the higher-merit parent (conservation of
-        specialization). A small mutation is applied after crossover
-        to prevent exact cloning of either parent.
+        Supports two modes:
+          - UNIFORM: Random gene-by-gene selection from either parent (classic).
+          - SBX: Simulated Binary Crossover — industry-standard for real-coded
+            GAs. Uses spread factor β drawn from a polynomial distribution
+            controlled by η_c, producing offspring near parents with high
+            probability while still allowing distant exploration.
 
-        This is the core genetic algorithm operation that enables
-        combining beneficial traits from two different lineages.
+        SBX details:
+            For each gene i, with parents p1(i), p2(i):
+              u ~ U(0, 1)
+              if u ≤ 0.5:  β = (2u)^(1/(η_c+1))
+              else:         β = (1/(2(1-u)))^(1/(η_c+1))
+              child(i) = 0.5[(1±β)·p1(i) + (1∓β)·p2(i)]   (random sign)
+            Values clamped to [gene_min, gene_max].
         """
         # Determine which parent has higher merit
         merit1 = 0.0
@@ -847,7 +868,19 @@ class SurvivalMechanism:
 
         better_parent = parent1 if merit1 >= merit2 else parent2
 
-        # Uniform crossover: randomly pick each gene from either parent
+        if self._crossover_mode == CrossoverMode.SBX:
+            return self._sbx_crossover(parent1, parent2, child_name, better_parent)
+        else:
+            return self._uniform_crossover(parent1, parent2, child_name, better_parent)
+
+    def _uniform_crossover(
+        self,
+        parent1: MinisterGenome,
+        parent2: MinisterGenome,
+        child_name: str,
+        better_parent: MinisterGenome,
+    ) -> MinisterGenome:
+        """Uniform crossover: each gene randomly picked from either parent."""
         temperature = random.choice([parent1.temperature, parent2.temperature])
         confidence_baseline = random.choice(
             [parent1.confidence_baseline, parent2.confidence_baseline]
@@ -865,10 +898,8 @@ class SurvivalMechanism:
             [parent1.specialization_weight, parent2.specialization_weight]
         )
 
-        # Domain: inherit from better parent to preserve specialization
         domain = better_parent.domain
 
-        # Small post-crossover mutation for diversity
         temp_jitter = random.uniform(-0.05, 0.05) * self._mutation_scale
         conf_jitter = random.uniform(-0.03, 0.03) * self._mutation_scale
 
@@ -879,6 +910,78 @@ class SurvivalMechanism:
             confidence_baseline=max(
                 0.3, min(0.95, confidence_baseline + conf_jitter)
             ),
+            exploration_rate=exploration_rate,
+            conservatism=conservatism,
+            prompt_mutation_rate=prompt_mutation_rate,
+            specialization_weight=specialization_weight,
+            generation=max(parent1.generation, parent2.generation) + 1,
+            parent=f"{parent1.name}×{parent2.name}",
+        )
+
+    def _sbx_crossover(
+        self,
+        parent1: MinisterGenome,
+        parent2: MinisterGenome,
+        child_name: str,
+        better_parent: MinisterGenome,
+    ) -> MinisterGenome:
+        """Simulated Binary Crossover (Deb & Agrawal, 1995).
+
+        Each gene recombined independently via polynomial spread factor.
+        Produces offspring that is a smooth blend between parents,
+        with higher η_c → offspring closer to parents.
+        """
+        eta = self._sbx_eta
+
+        def _sbx_gene(v1: float, v2: float, lo: float, hi: float) -> float:
+            """Apply SBX to a single gene value."""
+            if abs(v1 - v2) < 1e-9:
+                return v1  # No variation to exploit
+
+            # Ensure consistent ordering
+            if v1 > v2:
+                v1, v2 = v2, v1
+
+            u = random.random()
+            if u <= 0.5:
+                beta = (2.0 * u) ** (1.0 / (eta + 1.0))
+            else:
+                beta = (1.0 / (2.0 * (1.0 - u))) ** (1.0 / (eta + 1.0))
+
+            # Random sign: child gets either spread-out or contracted value
+            if random.random() < 0.5:
+                child_val = 0.5 * ((1.0 + beta) * v1 + (1.0 - beta) * v2)
+            else:
+                child_val = 0.5 * ((1.0 - beta) * v1 + (1.0 + beta) * v2)
+
+            return max(lo, min(hi, child_val))
+
+        temperature = _sbx_gene(
+            parent1.temperature, parent2.temperature, 0.2, 1.0,
+        )
+        confidence_baseline = _sbx_gene(
+            parent1.confidence_baseline, parent2.confidence_baseline, 0.3, 0.95,
+        )
+        exploration_rate = _sbx_gene(
+            parent1.exploration_rate, parent2.exploration_rate, 0.0, 1.0,
+        )
+        conservatism = _sbx_gene(
+            parent1.conservatism, parent2.conservatism, 0.0, 1.0,
+        )
+        prompt_mutation_rate = _sbx_gene(
+            parent1.prompt_mutation_rate, parent2.prompt_mutation_rate, 0.0, 0.5,
+        )
+        specialization_weight = _sbx_gene(
+            parent1.specialization_weight, parent2.specialization_weight, 0.3, 2.0,
+        )
+
+        domain = better_parent.domain
+
+        return MinisterGenome(
+            name=child_name,
+            domain=domain,
+            temperature=temperature,
+            confidence_baseline=confidence_baseline,
             exploration_rate=exploration_rate,
             conservatism=conservatism,
             prompt_mutation_rate=prompt_mutation_rate,
