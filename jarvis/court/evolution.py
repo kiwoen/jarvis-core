@@ -354,6 +354,7 @@ class SurvivalMechanism:
         gap_analyzer: Optional[GapAnalyzer] = None,
         strategy_selector: Optional[StrategySelector] = None,
         genome_generator: Optional[GenomeGenerator] = None,
+        genome_path: Optional[str] = None,
     ) -> None:
         # ── Sliding merit: auto-wrap if enabled and board is plain MeritBoard ──
         if (
@@ -419,6 +420,18 @@ class SurvivalMechanism:
                 max_per_cycle=max_breed_per_cycle,
             )
             self._wire_breeder_providers()
+
+        # ── Genome persistence ─────────────────────────────────────
+        self._genome_path = genome_path
+        if genome_path:
+            loaded, _meta = self.load_genomes(genome_path)
+            if loaded:
+                for g in loaded:
+                    if g.name not in self._genomes:
+                        self._genomes[g.name] = g
+                logger.info(
+                    "Loaded %d genomes from %s", len(loaded), genome_path,
+                )
 
     # ------------------------------------------------------------------
     # Registration
@@ -859,6 +872,10 @@ class SurvivalMechanism:
             if a.action in (EvolutionAction.CLONE_MUTATE, EvolutionAction.SPAWN_SPECIALIST)
         )
 
+        # Auto-persist genomes after each cycle
+        if self._genome_path:
+            self.save_genomes()
+
         return EvolutionReport(
             cycle=self._cycle_count,
             actions_taken=actions,
@@ -869,6 +886,63 @@ class SurvivalMechanism:
             systemic_issues=systemic_issues,
             recommendations=recommendations,
         )
+
+    # ------------------------------------------------------------------
+    # Genome persistence
+    # ------------------------------------------------------------------
+
+    def save_genomes(self, path: Optional[str] = None) -> str | None:
+        """Persist all living genomes (active + shadow) to JSON.
+
+        Returns the file path on success, None if no path configured.
+        """
+        from jarvis.court.genome_store import GenomeStore
+
+        target = path or self._genome_path
+        if not target:
+            return None
+
+        living = [
+            g for name, g in self._genomes.items()
+            if self._statuses.get(name) not in (
+                MinisterStatus.ELIMINATED,
+            )
+        ]
+
+        active = sum(
+            1 for s in self._statuses.values()
+            if s == MinisterStatus.ACTIVE
+        )
+        shadow = sum(
+            1 for s in self._statuses.values()
+            if s == MinisterStatus.SHADOW
+        )
+
+        GenomeStore.save(
+            target,
+            living,
+            metadata={
+                "cycle": self._cycle_count,
+                "active_count": active,
+                "shadow_count": shadow,
+                "total_genomes": len(living),
+            },
+        )
+        return target
+
+    def load_genomes(
+        self, path: Optional[str] = None,
+    ) -> tuple[list["MinisterGenome"], dict]:
+        """Load genomes from a JSON file.
+
+        Returns (genomes, metadata). Does not modify self._genomes.
+        """
+        from jarvis.court.genome_store import GenomeStore
+
+        target = path or self._genome_path
+        if not target:
+            return [], {}
+        return GenomeStore.load(target)
 
     # ------------------------------------------------------------------
     # Step-by-step logic
