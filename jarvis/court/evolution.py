@@ -30,6 +30,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger("jarvis.court.evolution")
 
+from jarvis.court.diversity import (  # noqa: E402
+    CatastropheReport,
+    DiversityMonitor,
+    DiversitySnapshot,
+)
+
 
 class MinisterStatus(Enum):
     """Lifecycle status of a minister in the evolutionary court."""
@@ -154,6 +160,10 @@ class SurvivalMechanism:
         self._crossover_rate = max(0.0, min(1.0, crossover_rate))
         self._mutation_scale = self.MUTATION_SCALE
 
+        # Diversity monitoring — detects population monoculture
+        self.diversity = DiversityMonitor()
+        self._catastrophe_cooldown_cycles = 0
+
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
@@ -245,6 +255,14 @@ class SurvivalMechanism:
             1 for a in actions
             if a.action in (EvolutionAction.CLONE_MUTATE, EvolutionAction.SPAWN_SPECIALIST)
         )
+
+        # Step 8: Measure diversity and trigger catastrophe if needed
+        cat_events = self._maybe_run_catastrophe()
+        actions.extend(cat_events)
+        if cat_events:
+            recommendations.append(
+                "种群基因多样性过低，已触发大灾变重组"
+            )
 
         return EvolutionReport(
             cycle=self._cycle_count,
@@ -639,6 +657,166 @@ class SurvivalMechanism:
             gaps.append(f"已进化至第{max_gen}代，需审查原始大臣是否过于陈旧")
 
         return gaps
+
+    # ------------------------------------------------------------------
+    # Diversity + Catastrophe
+    # ------------------------------------------------------------------
+
+    def _maybe_run_catastrophe(self) -> list[EvolutionEvent]:
+        """Measure population diversity and trigger catastrophe if needed.
+
+        Catastrophe fires when:
+          - Diversity score stays below DIVERSITY_CRISIS_THRESHOLD for
+            CRISIS_STREAK_LIMIT consecutive cycles.
+          - Cool-down period has elapsed since last catastrophe.
+
+        The catastrophe:
+          1. Keeps top 3 ministers by merit
+          2. Eliminates everyone else (archiving genomes)
+          3. High-mutation clones survivors (3× normal scale)
+          4. Injects 2 domain specialists for uncovered areas
+        """
+        active_names = self.get_active_ministers()
+        if len(active_names) < 3:
+            return []
+
+        # Build merit scores
+        merit_scores: dict[str, float] = {}
+        for name in self._statuses:
+            if self._statuses[name] != MinisterStatus.ELIMINATED:
+                merit_scores[name] = (
+                    self._merit_board.compute_merit(name)
+                    if self._merit_board else 30.0
+                )
+
+        # Measure
+        self.diversity.measure(self._genomes, merit_scores, active_names)
+
+        # Check
+        if not self.diversity.is_catastrophe_needed(self._cycle_count):
+            return []
+
+        # Plan
+        all_names = list(self._statuses.keys())
+        plan = self.diversity.plan_catastrophe(
+            self._genomes, merit_scores, active_names, all_names,
+        )
+
+        return self._execute_catastrophe(plan)
+
+    def _execute_catastrophe(self, plan: CatastropheReport) -> list[EvolutionEvent]:
+        """Execute a planned catastrophe mutation.
+
+        Re-seeds the population with high-mutation survivors and fresh
+        specialists to break out of genetic monoculture.
+        """
+        actions: list[EvolutionEvent] = []
+
+        # 1. Eliminate non-survivors
+        eliminated = plan.details.get("eliminated", [])
+        for name in eliminated:
+            if self._statuses.get(name) != MinisterStatus.ELIMINATED:
+                self._statuses[name] = MinisterStatus.ELIMINATED
+                self._archive_genome(name)
+                if self._merit_board:
+                    self._merit_board.mark_eliminated(name)
+                actions.append(EvolutionEvent(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    minister=name,
+                    action=EvolutionAction.ELIMINATE,
+                    reason="大灾变淘汰—种群基因多样性枯竭",
+                    previous_merit=0,
+                ))
+
+        # 2. High-mutation clone survivors
+        old_mutation_scale = self._mutation_scale
+        self._mutation_scale = 3.0  # triple mutation for re-diversification
+        try:
+            survivor_genomes = [
+                self._genomes[s] for s in plan.survivors
+                if s in self._genomes
+            ]
+            for clone_name in plan.details.get("clones", []):
+                if not survivor_genomes:
+                    break
+                parent = random.choice(survivor_genomes)
+                mutated = self._mutate_genome(parent, clone_name)
+                self._genomes[clone_name] = mutated
+                self._statuses[clone_name] = MinisterStatus.SHADOW
+                self._probation_cycles[clone_name] = 0
+                actions.append(EvolutionEvent(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    minister=clone_name,
+                    action=EvolutionAction.CLONE_MUTATE,
+                    reason=f"大灾变高突变克隆—亲本 {parent.name}（3×变异率）",
+                    previous_merit=0,
+                    details={
+                        "method": "catastrophe_clone",
+                        "parent": parent.name,
+                        "mutation_scale": 3.0,
+                        "temperature": mutated.temperature,
+                        "generation": mutated.generation,
+                    },
+                ))
+        finally:
+            self._mutation_scale = old_mutation_scale
+
+        # 3. Spawn domain specialists
+        for spec_name in plan.details.get("specialists", []):
+            # Extract domain hint from name like "新晋_security"
+            parts = spec_name.rsplit("_", 1)
+            domain = parts[1] if len(parts) > 1 else "general"
+            # Randomize initial genome for maximum diversity
+            specialist_genome = MinisterGenome(
+                name=spec_name,
+                domain=domain,
+                temperature=random.uniform(0.4, 0.9),
+                confidence_baseline=random.uniform(0.5, 0.9),
+                exploration_rate=random.uniform(0.2, 0.7),
+                conservatism=random.uniform(0.2, 0.6),
+                prompt_mutation_rate=random.uniform(0.05, 0.3),
+                specialization_weight=random.uniform(0.8, 1.5),
+                generation=1,
+                parent="catastrophe",
+            )
+            self._genomes[spec_name] = specialist_genome
+            self._statuses[spec_name] = MinisterStatus.ACTIVE
+            self._probation_cycles[spec_name] = 0
+            actions.append(EvolutionEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                minister=spec_name,
+                action=EvolutionAction.SPAWN_SPECIALIST,
+                reason=f"大灾变领域注入—填补 {domain} 领域空白",
+                previous_merit=0,
+                details={
+                    "method": "catastrophe_specialist",
+                    "domain": domain,
+                    "temperature": specialist_genome.temperature,
+                },
+            ))
+
+        # Log summary
+        logger.critical(
+            "[Evolution] Catastrophe complete: "
+            "eliminated=%d, cloned=%d, specialists=%d",
+            len(eliminated),
+            len(plan.details.get("clones", [])),
+            len(plan.details.get("specialists", [])),
+        )
+
+        return actions
+
+    def get_diversity_score(self) -> float:
+        """Get the most recent population diversity score (0–1)."""
+        return self.diversity.get_latest_score()
+
+    def get_diversity_history(self) -> list[DiversitySnapshot]:
+        """Return diversity measurement history."""
+        return list(self.diversity.history)
+
+    def get_catastrophe_history(self) -> list[CatastropheReport]:
+        """Return catastrophe event history."""
+        return list(self.diversity.catastrophes)
 
     # ------------------------------------------------------------------
     # Genome operations
