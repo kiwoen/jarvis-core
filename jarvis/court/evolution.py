@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import logging
 import random
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
@@ -154,6 +155,58 @@ class AdaptiveRateConfig:
     max_mutation_scale: float = 6.00
     min_crossover_eta: float = 2.0
     max_crossover_eta: float = 100.0
+    # Stability blend weight: 0 = ignore stability, 1 = fully responsive
+    stability_blend: float = 0.20
+
+
+class StabilityTracker:
+    """Tracks court merit stability over a sliding window of cycles.
+
+    Feeds into _compute_adaptive_rates as a third signal beyond
+    TaskDifficulty and population diversity. The stability score
+    measures how consistently the court is improving:
+
+    - High stability (consistent merit, low variance): reduce
+      mutation to fine-tune → exploitation mode.
+    - Low stability (erratic merit, high variance): increase
+      mutation to explore → exploration mode.
+
+    Uses coefficient of variation (CV) over the merit window
+    to produce a score in [0, 1].
+    """
+
+    WINDOW_SIZE = 10
+
+    def __init__(self) -> None:
+        self._window: list[float] = []
+
+    def record_cycle(self, mean_merit: float) -> None:
+        """Record the mean merit across all active ministers at cycle end."""
+        self._window.append(mean_merit)
+        if len(self._window) > self.WINDOW_SIZE:
+            self._window.pop(0)
+
+    def get_stability_score(self) -> float:
+        """Compute stability score ∈ [0, 1].
+
+        - < 3 cycles: return 0.5 (neutral, not enough data).
+        - 3+ cycles: 1 − CV, where CV = stddev / |mean|.
+          High CV → low stability, low CV → high stability.
+        """
+        if len(self._window) < 3:
+            return 0.5
+
+        mean = statistics.mean(self._window)
+        if mean == 0:
+            return 0.0
+
+        std = statistics.stdev(self._window)
+        cv = abs(std / mean)
+        return max(0.0, min(1.0, 1.0 - cv))
+
+    def reset(self) -> None:
+        """Clear all tracked data (e.g. after catastrophe)."""
+        self._window.clear()
 
 
 @dataclass
@@ -350,6 +403,9 @@ class SurvivalMechanism:
         self._effective_mutation_scale = self._mutation_scale
         self._effective_sbx_eta = self._sbx_eta
 
+        # Stability tracking — feeds into adaptive rates as a 3rd signal
+        self.stability = StabilityTracker()
+
         # ── AutoBreeder ──────────────────────────────────────────
         self._enable_auto_breeding = enable_auto_breeding
         self._auto_breeder: Optional[AutoBreeder] = None
@@ -410,10 +466,12 @@ class SurvivalMechanism:
     def _compute_adaptive_rates(self) -> None:
         """Compute effective mutation_scale and sbx_eta for this cycle.
 
-        ADAPTIVE mode blends two signals:
+        ADAPTIVE mode blends three signals:
             1. TaskDifficulty → base (mutation_scale, sbx_eta) from config
             2. Diversity → factor that pushes toward exploration when
                diversity is low, conservatism when high.
+            3. Stability → court merit stability over cycles; chaotic
+               courts get more exploration, stable courts fine-tune.
 
         FIXED mode: no-op, keeps the classic constants.
         """
@@ -434,11 +492,21 @@ class SurvivalMechanism:
         # d_factor ∈ [0.3, 1.7]:  low diversity pushes factor > 1
         # (multiplies mutation, divides eta), high diversity pulls < 1
         d_factor = max(0.3, min(1.7, 1.0 + (0.3 - d_score) * 1.4))
-        blend = cfg.diversity_blend
-        blended = 1.0 + (d_factor - 1.0) * blend
 
-        eff_mut = base_mut * blended
-        eff_eta = base_eta / max(0.3, blended)
+        # Stability blend: chaotic court → more exploration
+        s_score = self.stability.get_stability_score()
+        # s_factor ∈ [0.3, 1.7]: low stability (chaotic) pushes > 1, high pulls < 1
+        s_factor = max(0.3, min(1.7, 1.0 + (0.5 - s_score) * 2.0))
+        s_blend = getattr(cfg, "stability_blend", 0.20)
+
+        # Composite blend: apply both diversity and stability
+        d_blend = cfg.diversity_blend
+        composite = 1.0
+        composite += (d_factor - 1.0) * d_blend
+        composite += (s_factor - 1.0) * s_blend
+
+        eff_mut = base_mut * composite
+        eff_eta = base_eta / max(0.3, composite)
 
         self._effective_mutation_scale = max(
             cfg.min_mutation_scale,
@@ -450,9 +518,9 @@ class SurvivalMechanism:
         )
 
         logger.debug(
-            "Adaptive rates — difficulty=%s, diversity=%.3f, "
+            "Adaptive rates — difficulty=%s, diversity=%.3f, stability=%.3f, "
             "eff_mut=%.3f, eff_eta=%.1f",
-            diff.name, d_score,
+            diff.name, d_score, s_score,
             self._effective_mutation_scale,
             self._effective_sbx_eta,
         )
@@ -770,6 +838,20 @@ class SurvivalMechanism:
 
         # Step 10: Track breeding outcomes (feedback loop)
         self._track_breeding_outcomes()
+
+        # ── Stability tracking ─────────────────────────────────────
+        # Record mean merit of active ministers for stability-aware
+        # adaptive rates in the next cycle.
+        if self._merit_board is not None:
+            active_names = self.get_active_ministers()
+            active_merits = [
+                self._merit_board.compute_merit(name)
+                for name in active_names
+            ]
+            if active_merits:
+                self.stability.record_cycle(
+                    sum(active_merits) / len(active_merits)
+                )
 
         # Recalculate spawn count after breeding may have added spawns
         spawn_count = sum(
@@ -1316,6 +1398,9 @@ class SurvivalMechanism:
             len(plan.details.get("clones", [])),
             len(plan.details.get("specialists", [])),
         )
+
+        # Reset stability tracker — catastrophe is a hard reset
+        self.stability.reset()
 
         return actions
 
