@@ -45,6 +45,7 @@ from jarvis.court.breeding import (  # noqa: E402
     BreedingReport,
     BreedingCandidate,
     BreedingStrategy,
+    BreedingOutcome,
     GapAnalyzer,
     StrategySelector,
     GenomeGenerator,
@@ -622,6 +623,69 @@ class SurvivalMechanism:
             parent or "none",
         )
 
+    def _track_breeding_outcomes(self) -> list[BreedingOutcome]:
+        """Step 10: Check bred minister outcomes and feed back to strategy.
+
+        After survival/promotion/elimination cycles have run, evaluate
+        which bred ministers survived and feed results to the
+        StrategyPerformanceTracker for adaptive weight adjustment.
+
+        Returns:
+            BreedingOutcome records for this evaluation cycle.
+        """
+        if not self._auto_breeder:
+            return []
+
+        # Build status map: minister → status string
+        statuses: dict[str, str] = {}
+        merit_scores: dict[str, float] = {}
+        for name, status in self._statuses.items():
+            status_str = status.name  # "ACTIVE" / "SHADOW" / "ELIMINATED" / "PROBATION"
+            statuses[name] = status_str
+            merit_scores[name] = self._get_minister_merit(name)
+
+        # Build merit history from sliding merit board
+        merit_history: dict[str, list[float]] = {}
+        if (
+            self._merit_board is not None
+            and hasattr(self._merit_board, "get_history")
+        ):
+            for name in self._auto_breeder._breed_cycle_registry:
+                try:
+                    history = self._merit_board.get_history(name)
+                    if history:
+                        merit_history[name] = history
+                except Exception:
+                    pass
+
+        outcomes = self._auto_breeder.check_outcomes(
+            current_cycle=self._cycle_count,
+            statuses=statuses,
+            merit_scores=merit_scores,
+            merit_history=merit_history if merit_history else None,
+        )
+
+        if outcomes:
+            for o in outcomes:
+                logger.info(
+                    "Breeding feedback: %s (%s/%s) — survived=%s promoted=%s "
+                    "merit=%.1f cycles=%d status=%s",
+                    o.minister_name, o.domain, o.strategy.name,
+                    o.survived, o.promoted,
+                    o.max_merit, o.cycles_survived, o.final_status,
+                )
+
+            # Log strategy effectiveness summary
+            scores = self._auto_breeder.performance_tracker.get_all_scores()
+            summary = " | ".join(
+                f"{s.name}: {v:.2f}" for s, v in sorted(
+                    scores.items(), key=lambda x: x[1], reverse=True,
+                )
+            )
+            logger.info("Breeding strategy effectiveness: %s", summary)
+
+        return outcomes
+
     @staticmethod
     def _genomes_to_dict(genome: MinisterGenome) -> dict[str, float]:
         """Convert MinisterGenome to dict for AutoBreeder consumption."""
@@ -703,6 +767,9 @@ class SurvivalMechanism:
 
         # Step 9: Breed new ministers proactively (close breed→eval→survive)
         self._breed_ministers(actions, systemic_issues, recommendations)
+
+        # Step 10: Track breeding outcomes (feedback loop)
+        self._track_breeding_outcomes()
 
         # Recalculate spawn count after breeding may have added spawns
         spawn_count = sum(

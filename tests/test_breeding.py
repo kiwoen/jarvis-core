@@ -9,10 +9,12 @@ import pytest
 from jarvis.court.breeding import (
     AutoBreeder,
     BreedingCandidate,
+    BreedingOutcome,
     BreedingStrategy,
     CapabilityGap,
     GapAnalyzer,
     GenomeGenerator,
+    StrategyPerformanceTracker,
     StrategySelector,
 )
 
@@ -537,3 +539,413 @@ class TestAutoBreeder:
         assert breeder.get_last_report() is None
         breeder.breed(["丞相"])
         assert breeder.get_last_report() is not None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# StrategyPerformanceTracker
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestStrategyPerformanceTracker:
+    """Outcome tracking and per-strategy effectiveness scoring."""
+
+    def test_record_and_success_rate(self):
+        tracker = StrategyPerformanceTracker()
+        # Record 10 SPECIALIST outcomes: 8 survived
+        for i in range(10):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="engineering",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=i < 8,
+                promoted=i < 3,
+                max_merit=70.0 + i,
+                cycles_survived=10,
+                final_status="ACTIVE" if i < 3 else ("SHADOW" if i < 8 else "ELIMINATED"),
+            ))
+
+        rate = tracker.get_success_rate(BreedingStrategy.SPECIALIST)
+        assert rate == 0.8
+
+    def test_insufficient_samples_returns_neutral(self):
+        tracker = StrategyPerformanceTracker()
+        # Only 3 outcomes → less than MIN_SAMPLES (5)
+        for i in range(3):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="general",
+                strategy=BreedingStrategy.EXPLORE,
+                survived=True,
+                promoted=False,
+                max_merit=50.0,
+                cycles_survived=5,
+                final_status="SHADOW",
+            ))
+
+        # Should return neutral prior 0.5
+        assert tracker.get_success_rate(BreedingStrategy.EXPLORE) == 0.5
+
+    def test_composite_score_all_success(self):
+        tracker = StrategyPerformanceTracker()
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="finance",
+                strategy=BreedingStrategy.SPECIALIZE,
+                survived=True,
+                promoted=True,
+                max_merit=95.0,
+                cycles_survived=15,
+                final_status="ACTIVE",
+            ))
+
+        score = tracker.get_composite_score(BreedingStrategy.SPECIALIZE)
+        # All survived + promoted + high merit → near 1.0
+        assert score > 0.8
+
+    def test_composite_score_all_failure(self):
+        tracker = StrategyPerformanceTracker()
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="security",
+                strategy=BreedingStrategy.HYBRID,
+                survived=False,
+                promoted=False,
+                max_merit=5.0,
+                cycles_survived=3,
+                final_status="ELIMINATED",
+            ))
+
+        score = tracker.get_composite_score(BreedingStrategy.HYBRID)
+        assert score < 0.3
+
+    def test_get_all_scores_covers_all_strategies(self):
+        tracker = StrategyPerformanceTracker()
+        scores = tracker.get_all_scores()
+        assert len(scores) == len(BreedingStrategy)
+        for s in BreedingStrategy:
+            assert s in scores
+
+    def test_sliding_window_dims_old_data(self):
+        tracker = StrategyPerformanceTracker()
+        # First 30: all survived
+        for i in range(30):
+            tracker.record(BreedingOutcome(
+                minister_name=f"old_{i}",
+                domain="engineering",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=True,
+                promoted=True,
+                max_merit=90.0,
+                cycles_survived=20,
+                final_status="ACTIVE",
+            ))
+
+        # Recent 50: all failed
+        for i in range(50):
+            tracker.record(BreedingOutcome(
+                minister_name=f"recent_{i}",
+                domain="engineering",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=False,
+                promoted=False,
+                max_merit=10.0,
+                cycles_survived=3,
+                final_status="ELIMINATED",
+            ))
+
+        # Sliding window should reflect recent failures
+        rate = tracker.get_success_rate(BreedingStrategy.SPECIALIST)
+        assert rate < 0.2
+
+    def test_reset_clears_all(self):
+        tracker = StrategyPerformanceTracker()
+        for i in range(10):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="engineering",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=True, promoted=True, max_merit=80.0,
+                cycles_survived=10, final_status="ACTIVE",
+            ))
+
+        assert tracker.get_outcome_count() == 10
+        tracker.reset()
+        assert tracker.get_outcome_count() == 0
+        assert tracker.get_success_rate(BreedingStrategy.SPECIALIST) == 0.5
+
+    def test_promotion_rate(self):
+        tracker = StrategyPerformanceTracker()
+        for i in range(10):
+            tracker.record(BreedingOutcome(
+                minister_name=f"test_{i}",
+                domain="education",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=True,
+                promoted=(i < 4),  # 4/10 promoted
+                max_merit=75.0,
+                cycles_survived=12,
+                final_status="ACTIVE" if i < 4 else "SHADOW",
+            ))
+
+        rate = tracker.get_promotion_rate(BreedingStrategy.SPECIALIST)
+        assert rate == 0.4
+
+
+# ═══════════════════════════════════════════════════════════════════
+# StrategySelector Adaptive Weights
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestStrategySelectorAdaptive:
+    """Adaptive weight integration between tracker and selector."""
+
+    def test_no_tracker_uses_static_weights(self):
+        selector = StrategySelector()
+        weights = selector.get_current_weights()
+        # All 4 strategies should have non-zero weights
+        for s in BreedingStrategy:
+            assert weights.get(s, 0) > 0
+        total = sum(weights.values())
+        assert abs(total - 1.0) < 0.01
+
+    def test_tracker_with_enough_data_uses_adaptive(self):
+        selector = StrategySelector()
+        tracker = StrategyPerformanceTracker()
+
+        # Make SPECIALIST dominate with successes
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"dom_{i}",
+                domain="engineering",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=True, promoted=True, max_merit=95.0,
+                cycles_survived=20, final_status="ACTIVE",
+            ))
+        # Make HYBRID fail
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"fail_{i}",
+                domain="security",
+                strategy=BreedingStrategy.HYBRID,
+                survived=False, promoted=False, max_merit=5.0,
+                cycles_survived=2, final_status="ELIMINATED",
+            ))
+
+        selector.set_performance_tracker(tracker)
+        weights = selector.get_current_weights()
+
+        # SPECIALIST should be weighted highest
+        assert weights[BreedingStrategy.SPECIALIST] > weights[BreedingStrategy.HYBRID]
+
+    def test_deterministic_gap_overrides_adaptive(self):
+        """0 ministers still always picks SPECIALIST regardless of tracker."""
+        selector = StrategySelector()
+        tracker = StrategyPerformanceTracker()
+        # Feed tracker with SPECIALIST failures to lower its weight
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"s_{i}",
+                domain="finance",
+                strategy=BreedingStrategy.SPECIALIST,
+                survived=False, promoted=False, max_merit=2.0,
+                cycles_survived=1, final_status="ELIMINATED",
+            ))
+        # Boost EXPLORE
+        for i in range(20):
+            tracker.record(BreedingOutcome(
+                minister_name=f"e_{i}",
+                domain="personal",
+                strategy=BreedingStrategy.EXPLORE,
+                survived=True, promoted=True, max_merit=95.0,
+                cycles_survived=20, final_status="ACTIVE",
+            ))
+
+        selector.set_performance_tracker(tracker)
+
+        # Gap with 0 coverage → deterministic SPECIALIST
+        gap = CapabilityGap(
+            domain="security",
+            severity=1.0,
+            reason="零覆盖",
+            ministers_present=0,
+            avg_merit=0.0,
+            diversity_score=0.5,
+        )
+        strategy = selector._choose_strategy(gap)
+        assert strategy == BreedingStrategy.SPECIALIST
+
+    def test_weighted_fallback_respects_blend(self):
+        """Weighted selection without deterministic triggers uses blended weights."""
+        selector = StrategySelector()
+        tracker = StrategyPerformanceTracker()
+        # Make all strategies perform moderately
+        for s in BreedingStrategy:
+            for i in range(10):
+                tracker.record(BreedingOutcome(
+                    minister_name=f"{s.name}_{i}",
+                    domain="general",
+                    strategy=s,
+                    survived=True, promoted=(i < 5),
+                    max_merit=60.0 + (10 * i % 40),
+                    cycles_survived=10, final_status="ACTIVE",
+                ))
+
+        selector.set_performance_tracker(tracker)
+
+        # Non-deterministic gap
+        gap = CapabilityGap(
+            domain="engineering",
+            severity=0.3,
+            reason="质量不足",
+            ministers_present=3,
+            avg_merit=30.0,
+            diversity_score=0.5,
+        )
+
+        # Run many times to verify we can get different strategies
+        results = set()
+        for _ in range(50):
+            results.add(selector._choose_strategy(gap))
+        # With non-zero weights, we should see at least 2 different strategies
+        assert len(results) >= 2
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AutoBreeder Outcome Tracking
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAutoBreederOutcomes:
+    """check_outcomes and tracker wiring in AutoBreeder."""
+
+    def test_tracker_wired_on_init(self):
+        breeder = AutoBreeder()
+        # Tracker should be wired to selector
+        assert breeder.performance_tracker is not None
+        assert breeder.strategy_selector._tracker is breeder.performance_tracker
+
+    def test_check_outcomes_no_mature_ministers(self):
+        """Ministers bred too recently aren't evaluated."""
+        breeder = AutoBreeder()
+
+        # Simulate a very recent breed
+        breeder._breed_cycle_registry["工部技师"] = 95
+        breeder._breed_domain_registry["工部技师"] = "engineering"
+        breeder._breed_strategy_registry["工部技师"] = BreedingStrategy.SPECIALIST
+
+        outcomes = breeder.check_outcomes(
+            current_cycle=96,  # only 1 cycle since breed
+            statuses={"工部技师": "SHADOW"},
+            merit_scores={"工部技师": 40.0},
+        )
+
+        assert len(outcomes) == 0  # too young
+        assert "工部技师" in breeder._breed_cycle_registry  # still tracked
+
+    def test_check_outcomes_mature_survived(self):
+        """Mature minister that survived → recorded and removed from registry."""
+        breeder = AutoBreeder()
+
+        breeder._breed_cycle_registry["户部主事"] = 80
+        breeder._breed_domain_registry["户部主事"] = "finance"
+        breeder._breed_strategy_registry["户部主事"] = BreedingStrategy.SPECIALIZE
+
+        outcomes = breeder.check_outcomes(
+            current_cycle=90,  # 10 cycles later
+            statuses={"户部主事": "ACTIVE"},
+            merit_scores={"户部主事": 75.0},
+        )
+
+        assert len(outcomes) == 1
+        o = outcomes[0]
+        assert o.minister_name == "户部主事"
+        assert o.survived is True
+        assert o.promoted is True
+        assert o.final_status == "ACTIVE"
+
+        # Recorded in tracker
+        assert breeder.performance_tracker.get_outcome_count() == 1
+
+        # Removed from breeding registry
+        assert "户部主事" not in breeder._breed_cycle_registry
+
+    def test_check_outcomes_mature_eliminated(self):
+        """Mature minister that was eliminated → recorded as not survived."""
+        breeder = AutoBreeder()
+
+        breeder._breed_cycle_registry["锦衣卫"] = 70
+        breeder._breed_domain_registry["锦衣卫"] = "security"
+        breeder._breed_strategy_registry["锦衣卫"] = BreedingStrategy.EXPLORE
+
+        outcomes = breeder.check_outcomes(
+            current_cycle=80,
+            statuses={"锦衣卫": "ELIMINATED"},
+            merit_scores={"锦衣卫": 0.0},
+        )
+
+        assert len(outcomes) == 1
+        o = outcomes[0]
+        assert o.survived is False
+        assert o.promoted is False
+        assert o.final_status == "ELIMINATED"
+
+    def test_check_outcomes_multiple(self):
+        """Multiple ministers at various maturity levels."""
+        breeder = AutoBreeder()
+
+        # Recent breed (too young)
+        breeder._breed_cycle_registry["司乐郎"] = 48
+        breeder._breed_domain_registry["司乐郎"] = "creative"
+        breeder._breed_strategy_registry["司乐郎"] = BreedingStrategy.EXPLORE
+
+        # Mature, survived
+        breeder._breed_cycle_registry["翰林学士"] = 40
+        breeder._breed_domain_registry["翰林学士"] = "research"
+        breeder._breed_strategy_registry["翰林学士"] = BreedingStrategy.SPECIALIST
+
+        # Mature, shadow status
+        breeder._breed_cycle_registry["太医令"] = 42
+        breeder._breed_domain_registry["太医令"] = "health"
+        breeder._breed_strategy_registry["太医令"] = BreedingStrategy.HYBRID
+
+        outcomes = breeder.check_outcomes(
+            current_cycle=50,
+            statuses={
+                "司乐郎": "SHADOW",
+                "翰林学士": "ACTIVE",
+                "太医令": "SHADOW",
+            },
+            merit_scores={
+                "司乐郎": 30.0,
+                "翰林学士": 88.0,
+                "太医令": 55.0,
+            },
+        )
+
+        # 司乐郎 is too young (age=2 < 3), excluded
+        # 翰林学士: age=10, ACTIVE → survived
+        # 太医令: age=8, SHADOW → survived but not promoted
+        assert len(outcomes) == 2
+        names = {o.minister_name for o in outcomes}
+        assert names == {"翰林学士", "太医令"}
+
+    def test_merit_history_peak(self):
+        """check_outcomes uses merit history to find peak."""
+        breeder = AutoBreeder()
+
+        breeder._breed_cycle_registry["国子监博士"] = 60
+        breeder._breed_domain_registry["国子监博士"] = "education"
+        breeder._breed_strategy_registry["国子监博士"] = BreedingStrategy.SPECIALIZE
+
+        outcomes = breeder.check_outcomes(
+            current_cycle=70,
+            statuses={"国子监博士": "ACTIVE"},
+            merit_scores={"国子监博士": 65.0},
+            merit_history={"国子监博士": [20.0, 35.0, 55.0, 80.0, 75.0, 65.0]},
+        )
+
+        assert len(outcomes) == 1
+        # Peak from history is 80.0, not the current 65.0
+        assert outcomes[0].max_merit == 80.0

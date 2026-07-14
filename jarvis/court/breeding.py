@@ -29,6 +29,7 @@ from __future__ import annotations
 import copy
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Optional
@@ -77,6 +78,121 @@ class BreedingReport:
     candidates_created: list[str]  # names of actually created ministers
     strategies_used: dict[BreedingStrategy, int]
     timestamp: str
+
+
+@dataclass
+class BreedingOutcome:
+    """Outcome of a bred minister after evolution cycles have passed."""
+
+    minister_name: str
+    domain: str
+    strategy: BreedingStrategy
+    survived: bool          # did they survive to end of observation window?
+    promoted: bool          # did they get promoted from shadow → active?
+    max_merit: float        # peak merit score achieved
+    cycles_survived: int    # how many cycles before eliminated (or window length)
+    final_status: str       # "ACTIVE" | "SHADOW" | "ELIMINATED"
+    timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
+
+
+class StrategyPerformanceTracker:
+    """Tracks breeding outcomes to compute per-strategy effectiveness.
+
+    Maintains a sliding window of recent outcomes, computing success rates
+    that feed back into StrategySelector's adaptive weights.
+    """
+
+    MAX_OUTCOMES = 200         # max outcomes to retain in memory
+    SUCCESS_WINDOW = 50        # recent N outcomes for rate calculation
+    MIN_SAMPLES = 5            # minimum samples before adapting weights
+    WEIGHT_LEARNING_RATE = 0.15  # how fast weights adapt to new evidence
+
+    def __init__(self) -> None:
+        self._outcomes: list[BreedingOutcome] = []
+        self._strategy_stats: dict[BreedingStrategy, dict[str, float]] = {
+            s: {"successes": 0, "total": 0, "sum_merit": 0.0, "sum_cycles": 0}
+            for s in BreedingStrategy
+        }
+
+    def record(self, outcome: BreedingOutcome) -> None:
+        """Record a breeding outcome and update statistics."""
+        self._outcomes.append(outcome)
+        if len(self._outcomes) > self.MAX_OUTCOMES:
+            self._outcomes = self._outcomes[-self.MAX_OUTCOMES:]
+
+        # Update aggregate stats
+        stats = self._strategy_stats[outcome.strategy]
+        stats["total"] += 1
+        stats["sum_merit"] += outcome.max_merit
+        stats["sum_cycles"] += outcome.cycles_survived
+        if outcome.survived:
+            stats["successes"] += 1
+
+    def get_success_rate(self, strategy: BreedingStrategy) -> float:
+        """Sliding-window success rate for a given strategy."""
+        recent = [
+            o for o in self._outcomes[-self.SUCCESS_WINDOW:]
+            if o.strategy == strategy
+        ]
+        if len(recent) < self.MIN_SAMPLES:
+            return 0.5  # neutral prior
+        survived = sum(1 for o in recent if o.survived)
+        return survived / len(recent)
+
+    def get_avg_merit(self, strategy: BreedingStrategy) -> float:
+        """Average peak merit achieved by this strategy."""
+        recent = [
+            o for o in self._outcomes[-self.SUCCESS_WINDOW:]
+            if o.strategy == strategy
+        ]
+        if not recent:
+            return 0.0
+        return sum(o.max_merit for o in recent) / len(recent)
+
+    def get_avg_cycles(self, strategy: BreedingStrategy) -> float:
+        """Average cycles survived by this strategy."""
+        recent = [
+            o for o in self._outcomes[-self.SUCCESS_WINDOW:]
+            if o.strategy == strategy
+        ]
+        if not recent:
+            return 0.0
+        return sum(o.cycles_survived for o in recent) / len(recent)
+
+    def get_promotion_rate(self, strategy: BreedingStrategy) -> float:
+        """Fraction of bred ministers that got promoted to ACTIVE."""
+        recent = [
+            o for o in self._outcomes[-self.SUCCESS_WINDOW:]
+            if o.strategy == strategy
+        ]
+        if len(recent) < self.MIN_SAMPLES:
+            return 0.5
+        promoted = sum(1 for o in recent if o.promoted)
+        return promoted / len(recent)
+
+    def get_composite_score(self, strategy: BreedingStrategy) -> float:
+        """Composite 0-1 score: 40% survival + 30% merit + 20% promotion + 10% longevity."""
+        survival = self.get_success_rate(strategy)
+        merit = min(self.get_avg_merit(strategy) / 100.0, 1.0)
+        promotion = self.get_promotion_rate(strategy)
+        cycles = min(self.get_avg_cycles(strategy) / 20.0, 1.0)
+        return survival * 0.40 + merit * 0.30 + promotion * 0.20 + cycles * 0.10
+
+    def get_all_scores(self) -> dict[BreedingStrategy, float]:
+        """Composite scores for all strategies."""
+        return {s: self.get_composite_score(s) for s in BreedingStrategy}
+
+    def get_outcome_count(self) -> int:
+        return len(self._outcomes)
+
+    def reset(self) -> None:
+        """Clear all tracked outcomes."""
+        self._outcomes.clear()
+        for stats in self._strategy_stats.values():
+            stats["successes"] = 0
+            stats["total"] = 0
+            stats["sum_merit"] = 0.0
+            stats["sum_cycles"] = 0
 
 
 # ── Domain definitions ──────────────────────────────────────────────
@@ -296,13 +412,34 @@ class StrategySelector:
         - Quality gaps (low merit)        → SPECIALIZE (clone elite + specialize)
         - Diversity gaps (homogeneous)    → EXPLORE (random high-diversity)
         - Mix of above                    → HYBRID (crossover)
+
+    Adaptive mode: when a StrategyPerformanceTracker is attached via
+    set_performance_tracker(), weights evolve based on historical outcomes.
+    Strategies that produce ministers who survive/promote/thrive get higher
+    selection probability.
     """
 
-    # Weights for strategy distribution
+    # Default fallback weights (used when no tracker or insufficient data)
     SPECIALIST_WEIGHT = 0.35
     SPECIALIZE_WEIGHT = 0.30
     EXPLORE_WEIGHT = 0.25
     HYBRID_WEIGHT = 0.10
+
+    # Weight blend ratio for adaptive vs. static weights
+    ADAPTIVE_BLEND = 0.60  # 60% adaptive, 40% static
+
+    def __init__(self) -> None:
+        self._tracker: Optional[StrategyPerformanceTracker] = None
+
+    def set_performance_tracker(
+        self, tracker: StrategyPerformanceTracker,
+    ) -> None:
+        """Attach a performance tracker for adaptive weight adjustment.
+
+        Once attached, _choose_strategy_weighted() shifts from pure static
+        weights to a blend that favors historically successful strategies.
+        """
+        self._tracker = tracker
 
     def select(
         self,
@@ -339,28 +476,70 @@ class StrategySelector:
         return candidates
 
     def _choose_strategy(self, gap: CapabilityGap) -> BreedingStrategy:
-        """Strategize based on gap characteristics."""
+        """Strategize based on gap characteristics and adaptive weights."""
         if gap.ministers_present == 0:
-            # No coverage → inject domain specialist
             return BreedingStrategy.SPECIALIST
         elif gap.avg_merit < 25:
-            # Very low quality → clone best + specialize
             return BreedingStrategy.SPECIALIZE
         elif gap.diversity_score < 0.10:
-            # Extremely homogeneous → explore
             return BreedingStrategy.EXPLORE
         else:
-            # Weighted random
-            roll = random.random()
-            if roll < self.SPECIALIST_WEIGHT:
-                return BreedingStrategy.SPECIALIST
-            elif roll < self.SPECIALIST_WEIGHT + self.SPECIALIZE_WEIGHT:
-                return BreedingStrategy.SPECIALIZE
-            elif roll < (self.SPECIALIST_WEIGHT + self.SPECIALIZE_WEIGHT
-                         + self.EXPLORE_WEIGHT):
-                return BreedingStrategy.EXPLORE
-            else:
-                return BreedingStrategy.HYBRID
+            return self._choose_strategy_weighted()
+
+    def _choose_strategy_weighted(self) -> BreedingStrategy:
+        """Weighted random selection, blending static + adaptive weights."""
+        if self._tracker and self._tracker.get_outcome_count() >= 5:
+            # Adaptive: blend tracker composite scores with static weights
+            weights = self._get_adaptive_weights()
+        else:
+            weights = self._get_static_weights()
+
+        roll = random.random()
+        cumulative = 0.0
+        for strategy in BreedingStrategy:
+            cumulative += weights.get(strategy, 0.0)
+            if roll < cumulative:
+                return strategy
+        # Fallback: uniform
+        return random.choice(list(BreedingStrategy))
+
+    def _get_static_weights(self) -> dict[BreedingStrategy, float]:
+        """Return normalized static weights."""
+        raw = {
+            BreedingStrategy.SPECIALIST: self.SPECIALIST_WEIGHT,
+            BreedingStrategy.SPECIALIZE: self.SPECIALIZE_WEIGHT,
+            BreedingStrategy.EXPLORE: self.EXPLORE_WEIGHT,
+            BreedingStrategy.HYBRID: self.HYBRID_WEIGHT,
+        }
+        total = sum(raw.values())
+        return {k: v / total for k, v in raw.items()}
+
+    def _get_adaptive_weights(self) -> dict[BreedingStrategy, float]:
+        """Blend static weights with performance-tracker composite scores."""
+        static = self._get_static_weights()
+        scores = self._tracker.get_all_scores()
+
+        blended: dict[BreedingStrategy, float] = {}
+        for s in BreedingStrategy:
+            adaptive = scores.get(s, 0.5)
+            blended[s] = (
+                static.get(s, 0.25) * (1.0 - self.ADAPTIVE_BLEND)
+                + adaptive * self.ADAPTIVE_BLEND
+            )
+
+        # Ensure no strategy drops to zero
+        min_weight = 0.05
+        for s in BreedingStrategy:
+            blended[s] = max(blended[s], min_weight)
+
+        total = sum(blended.values())
+        return {k: v / total for k, v in blended.items()}
+
+    def get_current_weights(self) -> dict[BreedingStrategy, float]:
+        """Return current effective selection weights (for introspection)."""
+        if self._tracker and self._tracker.get_outcome_count() >= 5:
+            return self._get_adaptive_weights()
+        return self._get_static_weights()
 
     def _build_genome_template(
         self,
@@ -546,6 +725,9 @@ class AutoBreeder:
     # Maximum new ministers per breeding round
     MAX_BREED_PER_CYCLE = 3
 
+    # How many cycles to wait before checking outcomes
+    OUTCOME_OBSERVATION_WINDOW = 10
+
     def __init__(
         self,
         gap_analyzer: Optional[GapAnalyzer] = None,
@@ -564,6 +746,15 @@ class AutoBreeder:
         self._expertise_provider: Optional[callable] = None
         self._merit_provider: Optional[callable] = None
         self._diversity_provider: Optional[callable] = None
+
+        # Feedback tracker
+        self.performance_tracker = StrategyPerformanceTracker()
+        self._breed_cycle_registry: dict[str, int] = {}  # minister → breed_cycle_index
+        self._breed_domain_registry: dict[str, str] = {}  # minister → domain
+        self._breed_strategy_registry: dict[str, BreedingStrategy] = {}  # minister → strategy
+
+        # Wire tracker to strategy selector for adaptive weights
+        self.strategy_selector.set_performance_tracker(self.performance_tracker)
 
         # Internal state
         self._cycles_since_breed = self.breeding_cooldown
@@ -645,6 +836,7 @@ class AutoBreeder:
         # Generate genomes
         created: list[str] = []
         strategies_used: dict[BreedingStrategy, int] = {}
+        cycle_index = self._total_bred + 0  # snapshot for registry
         for i, candidate in enumerate(candidates):
             parent_genome = None
             if candidate.parent_minister and parent_genomes:
@@ -658,6 +850,11 @@ class AutoBreeder:
             strategies_used[candidate.strategy] = (
                 strategies_used.get(candidate.strategy, 0) + 1
             )
+
+            # Register for outcome tracking
+            self._breed_cycle_registry[name] = cycle_index
+            self._breed_domain_registry[name] = candidate.target_domain
+            self._breed_strategy_registry[name] = candidate.strategy
 
         self._total_bred += len(created)
         self._cycles_since_breed = 0
@@ -741,3 +938,85 @@ class AutoBreeder:
     def reset_cooldown(self) -> None:
         """Force breeding on next cycle."""
         self._cycles_since_breed = self.breeding_cooldown
+
+    # ── Feedback Loop ──────────────────────────────────────────
+
+    def check_outcomes(
+        self,
+        current_cycle: int,
+        statuses: dict[str, str],          # minister → "ACTIVE"|"SHADOW"|"ELIMINATED"
+        merit_scores: dict[str, float],    # minister → merit
+        merit_history: Optional[dict[str, list[float]]] = None,  # minister → [merit over time]
+    ) -> list[BreedingOutcome]:
+        """Check bred ministers that have aged into observation window.
+
+        For each bred minister whose breed cycle is within
+        OUTCOME_OBSERVATION_WINDOW cycles of current_cycle,
+        compute a BreedingOutcome and feed it to the tracker.
+
+        Returns:
+            List of BreedingOutcome records produced this cycle.
+        """
+        new_outcomes: list[BreedingOutcome] = []
+
+        for minister, breed_cycle in list(self._breed_cycle_registry.items()):
+            age = current_cycle - breed_cycle
+            # Only assess ministers mature enough for evaluation
+            if age < 3:
+                continue
+
+            # Only assess if not yet evaluated (remove from registry after)
+            domain = self._breed_domain_registry.get(minister, "general")
+            strategy = self._breed_strategy_registry.get(
+                minister, BreedingStrategy.SPECIALIST,
+            )
+
+            status = statuses.get(minister, "ELIMINATED")
+            max_merit = self._compute_peak_merit(
+                minister, merit_history,
+                default=merit_scores.get(minister, 0.0),
+            )
+
+            outcome = BreedingOutcome(
+                minister_name=minister,
+                domain=domain,
+                strategy=strategy,
+                survived=status in ("ACTIVE", "SHADOW"),
+                promoted=(status == "ACTIVE"),
+                max_merit=max_merit,
+                cycles_survived=age,
+                final_status=status,
+            )
+
+            self.performance_tracker.record(outcome)
+            new_outcomes.append(outcome)
+
+        # Remove tracked ministers from registry so they're not re-evaluated
+        for outcome in new_outcomes:
+            name = outcome.minister_name
+            self._breed_cycle_registry.pop(name, None)
+            self._breed_domain_registry.pop(name, None)
+            self._breed_strategy_registry.pop(name, None)
+
+        if new_outcomes:
+            logger.info(
+                "AutoBreeder feedback: %d outcomes recorded, "
+                "tracker now has %d total",
+                len(new_outcomes),
+                self.performance_tracker.get_outcome_count(),
+            )
+
+        return new_outcomes
+
+    @staticmethod
+    def _compute_peak_merit(
+        minister: str,
+        merit_history: Optional[dict[str, list[float]]],
+        default: float = 0.0,
+    ) -> float:
+        """Compute peak merit from history or fallback to default."""
+        if merit_history and minister in merit_history:
+            history = merit_history[minister]
+            if history:
+                return max(history)
+        return default
