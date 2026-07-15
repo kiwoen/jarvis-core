@@ -228,6 +228,46 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .task-result .show-full:hover { text-decoration: underline; }
   .task-form hr { border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 0 0 12px 0; }
+
+  /* ── Ministers management panel ── */
+  .ministers-panel { background: #1a1a2e; border-radius: 8px; padding: 20px; margin-top: 16px; }
+  .ministers-panel h3 { margin: 0 0 16px 0; color: #e2e2e2; display: flex; align-items: center; gap: 8px; }
+  .minister-count { background: #4fc3f7; color: #0f0f23; border-radius: 12px; padding: 2px 10px; font-size: 13px; font-weight: bold; }
+  .add-btn { background: #4fc3f7; color: #0f0f23; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; float: right; }
+  .ministers-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  .ministers-table th { text-align: left; color: #8892b0; font-size: 13px; padding: 8px 12px; border-bottom: 1px solid #2a2a4a; }
+  .ministers-table td { color: #ccd6f6; padding: 10px 12px; border-bottom: 1px solid #1f1f3a; font-size: 14px; }
+  .merit-bar { background: #0f0f23; border-radius: 4px; height: 20px; overflow: hidden; min-width: 60px; }
+  .merit-fill { background: linear-gradient(90deg, #66bb6a, #4caf50); height: 100%; font-size: 11px; line-height: 20px; text-align: center; color: #fff; border-radius: 4px; }
+  .action-btn { background: none; border: none; cursor: pointer; font-size: 16px; padding: 4px 8px; }
+  .edit-btn { color: #4fc3f7; }
+  .delete-btn { color: #e94560; }
+  .domain-tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.65rem; font-weight: 600; background: rgba(108,140,255,0.12); color: var(--accent); border: 1px solid rgba(108,140,255,0.2); }
+
+  /* ── Modal (create/edit minister) ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+  .modal-overlay.hidden { display: none; }
+  .modal-box { background: #1a1a2e; border-radius: 12px; padding: 24px; width: 400px; max-width: 90vw; box-shadow: 0 8px 40px rgba(0,0,0,0.5); border: 1px solid #2a2a4a; }
+  .modal-box h3 { color: #e2e2e2; margin: 0 0 20px 0; font-size: 1.1rem; }
+  .modal-box label { display: block; color: #8892b0; font-size: 0.78rem; margin-bottom: 4px; margin-top: 12px; }
+  .modal-box input, .modal-box select { width: 100%; padding: 8px 12px; background: #0f0f23; color: #e2e2e2; border: 1px solid #2a2a4a; border-radius: 6px; font-family: inherit; font-size: 0.85rem; outline: none; box-sizing: border-box; }
+  .modal-box input:focus, .modal-box select:focus { border-color: #4fc3f7; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+  .modal-actions button { padding: 8px 20px; border-radius: 6px; font-family: inherit; font-size: 0.85rem; cursor: pointer; border: none; }
+  .modal-actions .btn-save { background: #4fc3f7; color: #0f0f23; font-weight: bold; }
+  .modal-actions .btn-cancel { background: #2a2a4a; color: #8892b0; }
+  .modal-error { color: #e94560; font-size: 0.78rem; margin-top: 8px; display: none; }
+
+  /* ── Confirm dialog overlay ── */
+  .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1001; display: flex; align-items: center; justify-content: center; }
+  .confirm-overlay.hidden { display: none; }
+  .confirm-box { background: #1a1a2e; border-radius: 12px; padding: 24px; width: 360px; max-width: 90vw; text-align: center; box-shadow: 0 8px 40px rgba(0,0,0,0.5); border: 1px solid #e94560; }
+  .confirm-box p { color: #e2e2e2; font-size: 0.95rem; margin-bottom: 20px; }
+  .confirm-box strong { color: #e94560; }
+  .confirm-actions { display: flex; gap: 10px; justify-content: center; }
+  .confirm-actions button { padding: 8px 24px; border-radius: 6px; font-family: inherit; font-size: 0.85rem; cursor: pointer; border: none; }
+  .confirm-actions .btn-confirm-yes { background: #e94560; color: #fff; font-weight: bold; }
+  .confirm-actions .btn-confirm-no { background: #2a2a4a; color: #8892b0; }
 </style>
 </head>
 <body>
@@ -270,6 +310,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="task-result" id="task-result"></div>
   </div>
+</div>
+
+<!-- Ministers Management Panel -->
+<div class="ministers-panel">
+  <h3>大臣管理 <span class="minister-count" id="ministerCount">0</span></h3>
+  <button class="add-btn" onclick="openCreateModal()">新建大臣</button>
+  <div style="clear:both;"></div>
+  <table class="ministers-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>领域</th><th>功绩(Merit)</th><th>稳定度</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="ministers-tbody"></tbody>
+  </table>
 </div>
 
 <!-- Time-series charts row -->
@@ -357,6 +412,31 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <div class="footer">
   Emperor Core &middot; Auto-refresh every 3s &middot; <span id="footerCycle">--</span>
+</div>
+
+<!-- Create/Edit Minister Modal -->
+<div class="modal-overlay hidden" id="ministerModal">
+  <div class="modal-box">
+    <h3 id="modalTitle">新建大臣</h3>
+    <div id="modalBody"></div>
+    <div class="modal-error" id="modalError"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">取消</button>
+      <button class="btn-save" id="modalSaveBtn">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirm Dialog -->
+<div class="confirm-overlay hidden" id="confirmDialog">
+  <div class="confirm-box">
+    <p>确认删除大臣 <strong id="confirmName"></strong> ?</p>
+    <p style="font-size:0.78rem;color:#8892b0;">此操作不可撤销</p>
+    <div class="confirm-actions">
+      <button class="btn-confirm-no" onclick="closeConfirm()">取消</button>
+      <button class="btn-confirm-yes" id="confirmYesBtn">确认删除</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -939,6 +1019,167 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   // Initialize cap hint on load
   updateCapHint();
+
+  // ── Ministers management ──
+  var ministers = [];
+  var _editingMinister = null;
+  var _deletingMinister = null;
+
+  async function loadMinisters() {
+    try {
+      var res = await fetch(API + '/api/ministers');
+      if (!res.ok) return;
+      var data = await res.json();
+      ministers = data.ministers || [];
+      renderMinistersTable();
+      updateMinisterCount();
+    } catch (e) {}
+  }
+
+  function renderMinistersTable() {
+    var tbody = document.getElementById('ministers-tbody');
+    if (!tbody) return;
+    if (!ministers.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8892b0;padding:24px;">暂无大臣</td></tr>';
+      return;
+    }
+    tbody.innerHTML = ministers.map(function(m) {
+      var stabColor = (m.stability > 0.8 ? '#66bb6a' : m.stability > 0.5 ? '#ffa726' : '#e94560');
+      return '<tr>' +
+        '<td><strong>' + (m.name || '?') + '</strong></td>' +
+        '<td><span class="domain-tag">' + (m.domain || 'general') + '</span></td>' +
+        '<td><div class="merit-bar"><div class="merit-fill" style="width:' + Math.min(m.merit || 0, 100) + '%">' + (m.merit || 0) + '</div></div></td>' +
+        '<td style="color:' + stabColor + '">' + ((m.stability || 0).toFixed(2)) + '</td>' +
+        '<td>' +
+          '<button class="action-btn edit-btn" onclick="openEditModal(\'' + m.name + '\')" title="编辑">✎</button>' +
+          '<button class="action-btn delete-btn" onclick="confirmDelete(\'' + m.name + '\')" title="删除">✕</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function updateMinisterCount() {
+    var el = document.getElementById('ministerCount');
+    if (el) el.textContent = ministers.length;
+  }
+
+  // ── Create Modal ──
+  function openCreateModal() {
+    _editingMinister = null;
+    document.getElementById('modalTitle').textContent = '新建大臣';
+    document.getElementById('modalBody').innerHTML =
+      '<label>名称</label>' +
+      '<input type="text" id="modalName" placeholder="输入大臣名称..." value="">' +
+      '<label>领域</label>' +
+      '<select id="modalDomain">' +
+        '<option value="general">general</option>' +
+        '<option value="math">math</option>' +
+        '<option value="data">data</option>' +
+        '<option value="code">code</option>' +
+        '<option value="legal">legal</option>' +
+        '<option value="science">science</option>' +
+        '<option value="creative">creative</option>' +
+      '</select>';
+    document.getElementById('modalSaveBtn').textContent = '创建';
+    document.getElementById('modalSaveBtn').onclick = submitCreate;
+    document.getElementById('modalError').style.display = 'none';
+    document.getElementById('ministerModal').classList.remove('hidden');
+  }
+
+  async function submitCreate() {
+    var name = document.getElementById('modalName').value.trim();
+    var domain = document.getElementById('modalDomain').value;
+    var err = document.getElementById('modalError');
+    if (!name) { err.textContent = '名称不能为空'; err.style.display = 'block'; return; }
+    try {
+      var res = await fetch(API + '/api/ministers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, domain: domain })
+      });
+      var data = await res.json();
+      if (!res.ok) { err.textContent = data.detail || '创建失败'; err.style.display = 'block'; return; }
+      closeModal();
+      await loadMinisters();
+    } catch (e) { err.textContent = '创建失败: ' + e.message; err.style.display = 'block'; }
+  }
+
+  // ── Edit Modal ──
+  function openEditModal(name) {
+    var m = ministers.find(function(x) { return x.name === name; });
+    if (!m) return;
+    _editingMinister = name;
+    document.getElementById('modalTitle').textContent = '编辑大臣 - ' + name;
+    document.getElementById('modalBody').innerHTML =
+      '<label>领域</label>' +
+      '<select id="modalDomain">' +
+        '<option value="general"' + (m.domain === 'general' ? ' selected' : '') + '>general</option>' +
+        '<option value="math"' + (m.domain === 'math' ? ' selected' : '') + '>math</option>' +
+        '<option value="data"' + (m.domain === 'data' ? ' selected' : '') + '>data</option>' +
+        '<option value="code"' + (m.domain === 'code' ? ' selected' : '') + '>code</option>' +
+        '<option value="legal"' + (m.domain === 'legal' ? ' selected' : '') + '>legal</option>' +
+        '<option value="science"' + (m.domain === 'science' ? ' selected' : '') + '>science</option>' +
+        '<option value="creative"' + (m.domain === 'creative' ? ' selected' : '') + '>creative</option>' +
+      '</select>' +
+      '<label>功绩 (0-100)</label>' +
+      '<input type="number" id="modalMerit" min="0" max="100" value="' + (m.merit || 0) + '">' +
+      '<label>稳定度 (0-1)</label>' +
+      '<input type="number" id="modalStability" min="0" max="1" step="0.01" value="' + (m.stability || 0.75).toFixed(2) + '">';
+    document.getElementById('modalSaveBtn').textContent = '保存';
+    document.getElementById('modalSaveBtn').onclick = submitEdit;
+    document.getElementById('modalError').style.display = 'none';
+    document.getElementById('ministerModal').classList.remove('hidden');
+  }
+
+  async function submitEdit() {
+    var domain = document.getElementById('modalDomain').value;
+    var merit = parseFloat(document.getElementById('modalMerit').value);
+    var stability = parseFloat(document.getElementById('modalStability').value);
+    var err = document.getElementById('modalError');
+    if (!_editingMinister) return;
+    try {
+      var res = await fetch(API + '/api/ministers/' + _editingMinister, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: domain, merit: merit, stability: stability })
+      });
+      var data = await res.json();
+      if (!res.ok) { err.textContent = data.detail || '保存失败'; err.style.display = 'block'; return; }
+      closeModal();
+      await loadMinisters();
+    } catch (e) { err.textContent = '保存失败: ' + e.message; err.style.display = 'block'; }
+  }
+
+  function closeModal() {
+    document.getElementById('ministerModal').classList.add('hidden');
+    _editingMinister = null;
+  }
+
+  // ── Delete Confirm ──
+  function confirmDelete(name) {
+    _deletingMinister = name;
+    document.getElementById('confirmName').textContent = name;
+    document.getElementById('confirmYesBtn').onclick = deleteMinister;
+    document.getElementById('confirmDialog').classList.remove('hidden');
+  }
+
+  function closeConfirm() {
+    document.getElementById('confirmDialog').classList.add('hidden');
+    _deletingMinister = null;
+  }
+
+  async function deleteMinister() {
+    if (!_deletingMinister) return;
+    try {
+      await fetch(API + '/api/ministers/' + _deletingMinister, { method: 'DELETE' });
+    } catch (e) {}
+    closeConfirm();
+    await loadMinisters();
+  }
+
+  // Load ministers on page load and periodic refresh
+  loadMinisters();
+  setInterval(loadMinisters, 30000);
 
   fetchStatus();
   setInterval(fetchStatus, 3000);

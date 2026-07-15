@@ -88,6 +88,17 @@ class ManualTaskRequest(BaseModel):
     domain: str = "general"
 
 
+class MinisterCreateRequest(BaseModel):
+    name: str
+    domain: str = "general"
+
+
+class MinisterUpdateRequest(BaseModel):
+    domain: Optional[str] = None
+    merit: Optional[float] = None
+    stability: Optional[float] = None
+
+
 # ══════════════════════════════════════════════════════════════════
 # Factory
 # ══════════════════════════════════════════════════════════════════
@@ -556,6 +567,111 @@ def create_app(
 
         # JSON format
         return data
+
+    # ── Minister management API ─────────────────────────────────────
+
+    VALID_DOMAINS = ["general", "math", "data", "code", "legal", "science", "creative"]
+
+    @app.get("/api/ministers")
+    def api_list_ministers():
+        """List all ministers with name, domain, merit, stability."""
+        snap = court.inspect.snapshot()
+        ministers = []
+        for m in snap.ministers:
+            # Check for merit override stored on genome
+            genome = court._sm._genomes.get(m.name)
+            merit = m.merit
+            if genome is not None and hasattr(genome, "_merit_override"):
+                merit = genome._merit_override
+            ministers.append({
+                "name": m.name,
+                "domain": m.domain,
+                "merit": round(merit, 1),
+                "stability": round(getattr(m, "confidence_baseline", 0.75), 2),
+            })
+        return {"ministers": ministers}
+
+    @app.post("/api/ministers")
+    def api_create_minister(req: MinisterCreateRequest):
+        """Create a new minister."""
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(400, "名称不能为空")
+
+        if name in court._sm._genomes:
+            raise HTTPException(400, "大臣已存在")
+
+        if req.domain not in VALID_DOMAINS:
+            raise HTTPException(400, f"无效领域: {req.domain}")
+
+        court.register(name=name, domain=req.domain)
+        return {
+            "minister": {
+                "name": name,
+                "domain": req.domain,
+                "merit": 0.0,
+                "stability": 0.75,
+            },
+            "message": f"大臣 {name} 已创建",
+        }
+
+    @app.put("/api/ministers/{name}")
+    def api_update_minister(name: str, req: MinisterUpdateRequest):
+        """Update a minister's domain, merit, or stability."""
+        genome = court._sm._genomes.get(name)
+        if genome is None:
+            raise HTTPException(404, f"大臣 {name} 不存在")
+
+        updated = False
+
+        if req.domain is not None:
+            if req.domain not in VALID_DOMAINS:
+                raise HTTPException(400, f"无效领域: {req.domain}")
+            genome.domain = req.domain
+            updated = True
+
+        if req.merit is not None:
+            if req.merit < 0:
+                raise HTTPException(400, "功绩不能为负数")
+            genome._merit_override = float(req.merit)
+            updated = True
+
+        if req.stability is not None:
+            if req.stability < 0 or req.stability > 1:
+                raise HTTPException(400, "稳定度必须在 0-1 之间")
+            genome.confidence_baseline = float(req.stability)
+            updated = True
+
+        if not updated:
+            raise HTTPException(400, "至少需要提供一个更新字段")
+
+        # Recompute merit considering override
+        merit = 0.0
+        if hasattr(genome, "_merit_override"):
+            merit = genome._merit_override
+        elif court._sm._merit_board is not None:
+            merit = court._sm._merit_board.compute_merit(name)
+
+        return {
+            "minister": {
+                "name": name,
+                "domain": genome.domain,
+                "merit": round(merit, 1),
+                "stability": round(genome.confidence_baseline, 2),
+            },
+        }
+
+    @app.delete("/api/ministers/{name}")
+    def api_delete_minister(name: str):
+        """Delete a minister permanently."""
+        if name not in court._sm._genomes:
+            raise HTTPException(404, f"大臣 {name} 不存在")
+
+        del court._sm._genomes[name]
+        if name in court._sm._statuses:
+            del court._sm._statuses[name]
+
+        return {"message": f"大臣 {name} 已删除"}
 
     return app
 
