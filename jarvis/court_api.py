@@ -309,8 +309,8 @@ def create_app(
         if mp is None:
             return {"summary": {}, "tasks": [], "evolutions": []}
 
-        active = snap.active_count if mp is None else 0
-        s = mp.summary(active_ministers=active)
+        sn = court.inspect.snapshot()
+        s = mp.summary(active_ministers=sn.active_count)
 
         tasks = []
         for t in mp.task_history(limit=100):

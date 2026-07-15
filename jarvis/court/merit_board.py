@@ -404,3 +404,19 @@ class MeritBoard:
             recent_trend=trend,
             eliminated=minister in self._eliminated,
         )
+
+    def success_rate(self) -> float:
+        """Aggregate success rate across all dispatch records (0.0-1.0).
+
+        Returns 0.0 when no dispatches have been recorded.
+        """
+        total = 0
+        successes = 0
+        for entries in self._ledger.values():
+            for e in entries:
+                total += 1
+                if e.success:
+                    successes += 1
+        if total == 0:
+            return 0.0
+        return successes / total

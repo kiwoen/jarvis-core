@@ -182,6 +182,31 @@ class Court:
     def merit_ranking(self) -> list[Any]:
         return self._merit_board.get_ranking()
 
+    @property
+    def success_rate(self) -> float:
+        """Aggregate success rate across all dispatch records (0.0-1.0)."""
+        return float(self._merit_board.success_rate())
+
+    @property
+    def avg_merit(self) -> float:
+        """Average merit across all ministers (0.0+)."""
+        ranking = self.merit_ranking
+        if not ranking:
+            return 0.0
+        return sum(float(m.merit) for m in ranking) / len(ranking)
+
+    @property
+    def min_ministers(self) -> int:
+        return self._config.min_ministers
+
+    @property
+    def max_ministers(self) -> int:
+        return self._config.max_ministers
+
+    @property
+    def crossover_rate(self) -> float:
+        return self._config.crossover_rate
+
     # ── Persistence ───────────────────────────────────────────────
 
     def save_genomes(self) -> Optional[str]:
