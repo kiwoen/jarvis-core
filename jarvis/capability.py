@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import hashlib
+import json as _json
 import logging
 import operator
 import random as _random
+import uuid as _uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -135,6 +138,20 @@ class CapabilityRegistry:
         "修改时间": "file_info", "行数": "file_info",
         "file size": "file_info", "file info": "file_info",
         "lines": "file_info",
+
+        # hash
+        "hash": "hash", "md5": "hash", "sha256": "hash", "sha1": "hash",
+        "加密": "hash", "摘要": "hash", "校验": "hash",
+        "哈希": "hash",
+
+        # json_tool
+        "json": "json_tool", "格式化": "json_tool",
+        "json美化": "json_tool", "解析": "json_tool",
+        "json格式": "json_tool",
+
+        # uuid_gen
+        "uuid": "uuid_gen", "唯一id": "uuid_gen", "guid": "uuid_gen",
+        "生成id": "uuid_gen", "唯一标识": "uuid_gen",
     }
 
     # If prompt matches any of these negative keywords for a capability,
@@ -563,13 +580,102 @@ def _handle_file_info(prompt: str, **kwargs: Any) -> dict:
     return {"result": "\n".join(lines), "data": data}
 
 
+def _handle_hash(prompt: str, **kwargs: Any) -> dict:
+    """Compute MD5 / SHA1 / SHA256 hash of a string."""
+    import re
+
+    # Determine algorithm from prompt
+    prompt_lower = prompt.lower()
+    if any(kw in prompt_lower for kw in ["sha256", "sha-256"]):
+        algo = "sha256"
+    elif any(kw in prompt_lower for kw in ["sha1", "sha-1"]):
+        algo = "sha1"
+    else:
+        algo = "md5"
+
+    # Try to extract text: after the instruction keywords
+    text_match = re.search(
+        r'(?:hash|md5|sha256|sha1|sha-256|sha-1|加密|摘要|校验|哈希)\s*[:：]?\s*(.+)',
+        prompt, re.IGNORECASE,
+    )
+    target_text = text_match.group(1).strip() if text_match else prompt.strip()
+
+    if not target_text:
+        return {"result": "无法提取哈希目标文本", "data": {"error": "no_text", "algorithm": algo}}
+
+    h = hashlib.new(algo)
+    h.update(target_text.encode("utf-8"))
+    digest = h.hexdigest()
+
+    algo_label = {"md5": "MD5", "sha1": "SHA1", "sha256": "SHA256"}[algo]
+
+    return {
+        "result": f"{algo_label} 哈希：\n  输入：{target_text}\n  {algo.upper()}：{digest}",
+        "data": {"algorithm": algo, "input": target_text, "digest": digest},
+    }
+
+
+def _handle_json_tool(prompt: str, **kwargs: Any) -> dict:
+    """JSON formatting / validation / compression."""
+    import re
+
+    # Try to extract JSON from prompt: look for {...} or [...]
+    json_match = re.search(r'(\{.*\}|\[.*\])', prompt, re.DOTALL)
+    if not json_match and "json" in kwargs:
+        json_str = kwargs["json"]
+    elif json_match:
+        json_str = json_match.group(1)
+    else:
+        return {"result": "未找到 JSON 数据", "data": {"error": "no_json"}}
+
+    prompt_lower = prompt.lower()
+
+    # Determine operation
+    if any(kw in prompt_lower for kw in ["压缩", "compress", "minify", "紧凑"]):
+        try:
+            obj = _json.loads(json_str)
+            compressed = _json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+            return {
+                "result": f"JSON 压缩结果：\n{compressed}",
+                "data": {"mode": "compress", "output": compressed, "input": json_str, "valid": True},
+            }
+        except _json.JSONDecodeError as e:
+            return {
+                "result": f"JSON 解析失败：{e}",
+                "data": {"mode": "compress", "error": str(e), "valid": False},
+            }
+    else:
+        # Default: format / validate
+        try:
+            obj = _json.loads(json_str)
+            pretty = _json.dumps(obj, ensure_ascii=False, indent=2)
+            return {
+                "result": f"JSON 格式化结果（合法）：\n{pretty}",
+                "data": {"mode": "format", "output": pretty, "input": json_str, "valid": True},
+            }
+        except _json.JSONDecodeError as e:
+            return {
+                "result": f"JSON 格式无效：{e}",
+                "data": {"mode": "format", "error": str(e), "valid": False},
+            }
+
+
+def _handle_uuid_gen(prompt: str, **kwargs: Any) -> dict:
+    """Generate a UUID4."""
+    uid = str(_uuid.uuid4())
+    return {
+        "result": f"UUID4：{uid}",
+        "data": {"uuid": uid, "version": 4},
+    }
+
+
 # ══════════════════════════════════════════════════════════════════
 # Factory: create a registry with all built-in capabilities
 # ══════════════════════════════════════════════════════════════════
 
 
 def create_default_registry() -> CapabilityRegistry:
-    """Create a CapabilityRegistry pre-loaded with 5 built-in capabilities."""
+    """Create a CapabilityRegistry pre-loaded with 8 built-in capabilities."""
     registry = CapabilityRegistry()
 
     registry.register(Capability(
@@ -601,6 +707,24 @@ def create_default_registry() -> CapabilityRegistry:
         description="获取文件大小、修改时间、行数等信息",
         domains=["data", "code"],
         handler=_handle_file_info,
+    ))
+    registry.register(Capability(
+        name="hash",
+        description="计算字符串的 MD5 / SHA1 / SHA256 哈希摘要",
+        domains=["code", "data"],
+        handler=_handle_hash,
+    ))
+    registry.register(Capability(
+        name="json_tool",
+        description="JSON 格式化美化 / 校验 / 压缩",
+        domains=["code", "data"],
+        handler=_handle_json_tool,
+    ))
+    registry.register(Capability(
+        name="uuid_gen",
+        description="生成 UUID4 唯一标识符",
+        domains=["code", "general"],
+        handler=_handle_uuid_gen,
     ))
 
     return registry

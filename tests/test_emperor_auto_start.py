@@ -118,8 +118,33 @@ class TestAutoStartScheduler:
             assert mock_batch.call_count == 1
             # Templates passed to execute_batch
             tmpls = mock_batch.call_args.args[0]
-            assert len(tmpls) == 3
+            assert len(tmpls) == 5
             assert all("prompt" in t and "domain" in t for t in tmpls)
+
+    def test_task_templates_cover_all_capabilities(self):
+        """Each template should contain keywords that trigger a specific capability."""
+        emp = Emperor()
+        emp.register("turing", domain="math")
+        # Access templates directly from the method's source
+        from jarvis.capability import create_default_registry
+        reg = create_default_registry()
+
+        templates = [
+            {"prompt": "现在几点了？今天是星期几？", "domain": "general"},       # → datetime
+            {"prompt": "计算 (17 * 23) + (45 / 9) - 8", "domain": "math"},      # → math
+            {"prompt": "掷一个1到100的骰子，再生成3个0-1之间的随机小数", "domain": "general"},  # → random
+            {"prompt": "把 'Hello Emperor Core' 反转并统计字符数", "domain": "general"},     # → text
+            {"prompt": "查看 jarvis/emperor.py 文件的行数和文件大小", "domain": "code"},      # → file_info
+        ]
+        assert len(templates) == 5
+
+        expected_caps = ["datetime", "math", "random", "text", "file_info"]
+        for tmpl, expected in zip(templates, expected_caps):
+            cap = reg.find_best(tmpl["prompt"], tmpl["domain"])
+            assert cap is not None, f"Template '{tmpl['prompt']}' should match capability"
+            assert cap.name == expected, (
+                f"Template '{tmpl['prompt']}' expected '{expected}' but got '{cap.name}'"
+            )
 
     def test_immediate_first_run_swallows_errors(self):
         """If first-run evolution/task batch fails, scheduler still starts."""

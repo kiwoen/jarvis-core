@@ -128,7 +128,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .cap-badge {
     display: inline-block; padding: 1px 8px; border-radius: 10px;
     font-size: 0.65rem; font-weight: 600; letter-spacing: 0.5px;
-    background: rgba(167,139,250,0.15); color: var(--accent-2);
     border: 1px solid rgba(167,139,250,0.25);
     margin-right: 6px; vertical-align: middle;
   }
@@ -596,6 +595,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     _alertFilterTimer = setTimeout(filterAlerts, 300);
   }
 
+  // ── Capability badge color map ──
+  var CAP_COLORS = {
+    // 工具类 → 蓝色
+    file_info: '#4fc3f7', hash: '#4fc3f7', json_tool: '#4fc3f7', uuid_gen: '#4fc3f7',
+    // 计算类 → 绿色
+    math: '#66bb6a', random: '#66bb6a',
+    // 文本类 → 橙色
+    text: '#ffa726', datetime: '#ffa726'
+  };
+
   function filterTasks() {
     var search = (document.getElementById('taskSearch').value || '').toLowerCase();
     var minister = document.getElementById('taskMinisterFilter').value;
@@ -628,7 +637,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       var capMatch = (t.result || '').match(/\[能力结果:\s*(\w+)\]/);
       var capBadge = '';
       if (capMatch) {
-        capBadge = '<span class="cap-badge">' + capMatch[1] + '</span>';
+        var capName = capMatch[1];
+        var capColor = CAP_COLORS[capName] || '#a78bfa';
+        capBadge = '<span class="cap-badge" style="background:' + capColor + '22;color:' + capColor + ';border-color:' + capColor + '44;">' + capName + '</span>';
       }
       return '<div class="task-row">' +
         '<span class="dot ' + statusClass + '"></span>' +

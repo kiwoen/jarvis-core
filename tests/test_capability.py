@@ -11,9 +11,12 @@ from jarvis.capability import (
     CapabilityRegistry,
     _handle_datetime,
     _handle_file_info,
+    _handle_hash,
+    _handle_json_tool,
     _handle_math,
     _handle_random,
     _handle_text,
+    _handle_uuid_gen,
     _safe_eval_math,
     create_default_registry,
 )
@@ -259,9 +262,9 @@ class TestCapabilityRegistry:
 
     def test_list_all(self):
         reg = create_default_registry()
-        assert reg.count == 5
+        assert reg.count == 8
         names = {c.name for c in reg.list_all()}
-        assert names == {"datetime", "math", "random", "text", "file_info"}
+        assert names == {"datetime", "math", "random", "text", "file_info", "hash", "json_tool", "uuid_gen"}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -350,7 +353,7 @@ class TestCourtIntegration:
         from jarvis.emperor import Emperor
         emp = Emperor()
         assert emp.capability_registry is not None
-        assert emp.capability_registry.count == 5
+        assert emp.capability_registry.count == 8
 
     def test_task_result_contains_capability_output(self):
         """When prompt matches a capability, result should contain capability output."""
@@ -373,6 +376,88 @@ class TestCourtIntegration:
         # Response may or may not have capability marker — depends on mock
         # Just verify it runs without error
         assert "response" in result
+
+
+# ══════════════════════════════════════════════════════════════════
+# _handle_hash
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestHandleHash:
+    def test_md5_default(self):
+        r = _handle_hash("hash hello world")
+        assert r["data"]["algorithm"] == "md5"
+        # MD5("hello world") = 5eb63bbbe01eeed093cb22bb8f5acdc3
+        assert r["data"]["digest"] == "5eb63bbbe01eeed093cb22bb8f5acdc3"
+
+    def test_sha256_explicit(self):
+        r = _handle_hash("sha256 hello world")
+        assert r["data"]["algorithm"] == "sha256"
+        assert len(r["data"]["digest"]) == 64
+        assert r["data"]["digest"] == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+    def test_sha1_explicit(self):
+        r = _handle_hash("sha1 hello world")
+        assert r["data"]["algorithm"] == "sha1"
+        assert len(r["data"]["digest"]) == 40
+        assert r["data"]["digest"] == "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed"
+
+    def test_empty_input(self):
+        r = _handle_hash("md5 ")
+        assert r["data"].get("error") == "no_text" or "错误" in r["result"]
+
+
+# ══════════════════════════════════════════════════════════════════
+# _handle_json_tool
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestHandleJsonTool:
+    def test_format_valid_json(self):
+        r = _handle_json_tool('json 格式化 {"a":1,"b":[2,3]}')
+        assert r["data"]["valid"] is True
+        assert r["data"]["mode"] == "format"
+        assert "{" in r["data"]["output"]
+        assert "  " in r["data"]["output"]  # indented
+
+    def test_compress_json(self):
+        r = _handle_json_tool('json 压缩 {"a": 1, "b": 2}')
+        assert r["data"]["valid"] is True
+        assert r["data"]["mode"] == "compress"
+        assert " " not in r["data"]["output"].replace('{"a":1,"b":2}', "")  # no spaces in compressed
+
+    def test_invalid_json(self):
+        r = _handle_json_tool('json 格式化 {"a": }')
+        assert r["data"]["valid"] is False
+        assert "error" in r["data"]
+
+    def test_no_json_found(self):
+        r = _handle_json_tool("json")
+        assert r["data"].get("error") == "no_json" or "未找到" in r["result"]
+
+
+# ══════════════════════════════════════════════════════════════════
+# _handle_uuid_gen
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestHandleUuidGen:
+    def test_generates_valid_uuid4(self):
+        r = _handle_uuid_gen("generate uuid")
+        uid = r["data"]["uuid"]
+        assert r["data"]["version"] == 4
+        # UUID4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+        parts = uid.split("-")
+        assert len(parts) == 5
+        assert len(uid) == 36
+        assert parts[2][0] == "4"
+
+    def test_uniqueness(self):
+        uids = set()
+        for _ in range(100):
+            r = _handle_uuid_gen("uuid")
+            uids.add(r["data"]["uuid"])
+        assert len(uids) == 100
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -408,9 +493,9 @@ class TestSafeEvalMath:
 
 
 class TestDefaultRegistry:
-    def test_has_all_five(self):
+    def test_has_all_eight(self):
         reg = create_default_registry()
-        assert reg.count == 5
+        assert reg.count == 8
 
     def test_each_capability_executable(self):
         reg = create_default_registry()

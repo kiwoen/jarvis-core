@@ -415,9 +415,11 @@ class Emperor:
             cycles=self.config.auto_evolve_cycles,
         )
         task_templates = [
-            {"prompt": "Summarize today's key events.", "domain": "general"},
-            {"prompt": "Compute 17 * 23 quickly.", "domain": "math"},
-            {"prompt": "Suggest a refactor for a 200-line file.", "domain": "code"},
+            {"prompt": "现在几点了？今天是星期几？", "domain": "general"},       # → datetime
+            {"prompt": "计算 (17 * 23) + (45 / 9) - 8", "domain": "math"},      # → math
+            {"prompt": "掷一个1到100的骰子，再生成3个0-1之间的随机小数", "domain": "general"},  # → random
+            {"prompt": "把 'Hello Emperor Core' 反转并统计字符数", "domain": "general"},     # → text
+            {"prompt": "查看 jarvis/emperor.py 文件的行数和文件大小", "domain": "code"},      # → file_info
         ]
         sched.schedule_tasks(
             interval_minutes=self.config.auto_tasks_interval_minutes,
