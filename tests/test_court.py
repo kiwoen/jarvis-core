@@ -279,3 +279,91 @@ class TestCourtEdgeCases:
         # Should not crash on ingestion attempt
         decree = await court.receive_petition("检查代码")
         assert decree.success
+
+
+# ── DB Persistence (Court Facade) ────────────────────────────────────────────
+
+class TestCourtDBPersistence:
+    """Tests that Court.evolve() writes to evolution_history when db is set."""
+
+    def test_evolve_persists_to_db(self, tmp_path):
+        """evolve() with db set writes events to evolution_history."""
+        from jarvis.court.court import Court
+        from jarvis.database import Database
+
+        db_path = str(tmp_path / "test_evolve.db")
+        db = Database(db_path)
+
+        court = Court()
+        court.register("alpha", domain="math")
+        court.register("beta", domain="code")
+        court.register("gamma", domain="writing")
+        court.db = db
+
+        result = court.evolve(n_cycles=3)
+        assert result is not None
+
+        history = db.get_evolution_history(limit=100)
+        assert len(history) > 0, "Evolution history should not be empty"
+        for row in history:
+            assert "minister_name" in row
+            assert "generation" in row
+            assert "merit_before" in row
+            assert "merit_after" in row
+
+    def test_evolve_no_db_no_error(self):
+        """evolve() without db should not crash."""
+        from jarvis.court.court import Court
+
+        court = Court()
+        court.register("alpha", domain="math")
+        result = court.evolve(n_cycles=2)
+        assert result is not None
+
+
+# ── DB Persistence (Emperor.execute_task) ────────────────────────────────────
+
+class TestEmperorTaskDBPersistence:
+    """Tests that Emperor.execute_task() writes to task_history when db is set."""
+
+    def test_execute_task_persists_to_db(self, tmp_path):
+        """execute_task() with db set writes to task_history."""
+        import tempfile
+        import os
+
+        from jarvis.emperor import Emperor, EmperorConfig
+        from jarvis.database import Database
+
+        db_path = str(tmp_path / "test_task.db")
+        db = Database(db_path)
+
+        config = EmperorConfig()
+        emp = Emperor(config)
+
+        # Register ministers before setting db
+        for domain in ["general", "code", "writing"]:
+            emp._court.register(domain=domain)
+
+        emp._court.db = db
+
+        result = emp.execute_task("Test task for persistence verification")
+        assert result is not None
+
+        history = db.get_task_history(limit=10)
+        assert len(history) >= 1, "Task history should not be empty after execute_task"
+        row = history[0]
+        assert "task_id" in row
+        assert "minister" in row
+        assert "status" in row
+
+    def test_execute_task_no_db_no_error(self):
+        """execute_task() without db should still work."""
+        from jarvis.emperor import Emperor, EmperorConfig
+
+        config = EmperorConfig()
+        emp = Emperor(config)
+        for domain in ["general"]:
+            emp._court.register(domain=domain)
+
+        result = emp.execute_task("Task without DB")
+        assert result is not None

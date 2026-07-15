@@ -59,6 +59,8 @@ class Court:
 
         cfg = config or CourtConfig()
 
+        self._db: Any = None
+
         base_board = MeritBoard()
         window_mode = (
             WindowMode.HARD_CUTOFF if cfg.sliding_window_mode == "hard_cutoff"
@@ -133,7 +135,25 @@ class Court:
     # ── Evolution ─────────────────────────────────────────────────
 
     def evolve(self, n_cycles: int = 1) -> dict:
-        return self._sm.emperor_evolve(n_cycles)
+        if self._db is not None:
+            events_before = len(self._sm._events)
+        result = self._sm.emperor_evolve(n_cycles)
+        if self._db is not None:
+            for event in self._sm._events[events_before:]:
+                try:
+                    self._db.save_evolution(
+                        generation=self._sm._cycle_count,
+                        minister_name=event.minister,
+                        merit_before=event.previous_merit,
+                        merit_after=event.new_merit,
+                        delta=event.new_merit - event.previous_merit,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Court] Failed to persist evolution for '%s'",
+                        event.minister,
+                    )
+        return result
 
     def run_cycle(self) -> Any:
         return self._sm.run_evolution_cycle()

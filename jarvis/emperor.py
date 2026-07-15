@@ -228,6 +228,20 @@ class Emperor:
             self._dispatch(LifecycleEvent.ON_TASK_ERROR,
                            task_id=task_id, error=outcome.error)
 
+        # Persist task to database
+        if self._court.db is not None:
+            try:
+                self._court.db.save_task(
+                    task_id=result["task_id"],
+                    prompt=prompt,
+                    minister=result["minister"],
+                    result=result["response"],
+                    confidence=result["confidence"],
+                    status="completed" if result["success"] else "failed",
+                )
+            except Exception:
+                logger.warning("[Emperor] Failed to persist task to DB")
+
         return result
 
     def execute_batch(self, tasks: list[dict]) -> list[dict]:
@@ -277,6 +291,11 @@ class Emperor:
         )
         db = Database(db_path)
         self._court.db = db
+
+        # Inject db into alert manager and scheduler for persistence
+        self.alerts._db = db
+        if self._scheduler is not None:
+            self._scheduler._db = db
 
         if self.config.auto_schedule:
             self._auto_start_scheduler()

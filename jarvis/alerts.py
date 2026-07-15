@@ -219,6 +219,20 @@ class AlertManager:
             if len(self._fired_history) > 200:
                 self._fired_history = self._fired_history[-100:]
 
+            # Persist to database
+            if self._db is not None:
+                try:
+                    self._db.save_alert(
+                        rule_name=alert.rule_name,
+                        level=alert.severity,
+                        message=alert.message,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Alerts] Failed to persist alert '%s' to database",
+                        alert.rule_name,
+                    )
+
         return fired
 
     # ── Built-in rules ──────────────────────────────────────────────

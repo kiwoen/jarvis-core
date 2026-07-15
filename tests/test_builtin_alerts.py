@@ -394,3 +394,65 @@ class TestAlertHistory:
         mgr.fire_rule("minister_depletion", emp)
         mgr.clear_history()
         assert len(mgr.history()) == 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# DB persistence on alert trigger
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestAlertDBPersistence:
+    """Tests that fired alerts are persisted to the database."""
+
+    def test_fire_rule_persists_to_db(self, tmp_path):
+        """fire_rule() with db set writes to alert_history."""
+        from jarvis.database import Database
+
+        db_path = str(tmp_path / "test_alert.db")
+        db = Database(db_path)
+
+        mgr = AlertManager(db=db)
+        emp = _make_emperor(active_ministers=["m1"])  # 1 minister → triggers depletion
+        mgr.ensure_builtin_rules(emp)
+
+        result = mgr.fire_rule("minister_depletion", emp)
+        assert result is not None
+
+        history = db.get_alert_history(limit=10)
+        assert len(history) >= 1, "Alert history DB should not be empty"
+        row = history[0]
+        assert row["rule_name"] == "minister_depletion"
+        assert row["level"] == "warning"
+        assert len(row["message"]) > 0
+
+    def test_evaluate_persists_to_db(self, tmp_path):
+        """evaluate() with db set writes threshold-based alerts to alert_history."""
+        from jarvis.database import Database
+        from jarvis.alerts import AlertRule
+
+        db_path = str(tmp_path / "test_alert_eval.db")
+        db = Database(db_path)
+
+        mgr = AlertManager(db=db)
+        mgr.add_rule(AlertRule(
+            name="test_low_metric",
+            metric="test_metric",
+            threshold=0.5,
+            operator="lt",
+            severity="warning",
+            message="Test metric is low",
+            cooldown_seconds=0.0,
+        ))
+
+        mgr.evaluate({"test_metric": 0.1})
+        history = db.get_alert_history(limit=10)
+        assert len(history) >= 1
+        assert history[0]["rule_name"] == "test_low_metric"
+
+    def test_alert_no_db_no_error(self):
+        """fire_rule() without db should not crash."""
+        mgr = AlertManager(db=None)
+        emp = _make_emperor(active_ministers=["m1"])
+        mgr.ensure_builtin_rules(emp)
+        result = mgr.fire_rule("minister_depletion", emp)
+        assert result is not None

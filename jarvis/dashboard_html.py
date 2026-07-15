@@ -225,6 +225,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div style="text-align:center;font-size:0.72rem;color:var(--text-dim);margin-bottom:var(--gap);padding:4px 0;">
+  历史数据已持久化，重启不丢失
+</div>
 
 <!-- Minister leaderboard -->
 <div class="table-wrap">
@@ -406,26 +409,31 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     }).join('');
   }
 
-  // ── Recent task list ──
+  // ── Recent task list (prefer DB history, fallback to metrics) ──
+  var taskHistory = null;
   function renderTaskList(metrics) {
-    var tasks = metrics.tasks || [];
+    var tasks = (taskHistory && taskHistory.length)
+      ? taskHistory
+      : (metrics && metrics.tasks ? metrics.tasks : []);
     document.getElementById('taskCount').textContent = tasks.length;
     if (!tasks.length) {
       document.getElementById('taskList').innerHTML = '<div class="empty">No tasks executed yet</div>';
       return;
     }
     var html = tasks.slice(0, 25).map(function(t) {
-      var statusClass = t.success ? 'online' : 'offline';
+      var statusClass = (t.success || t.status === 'completed') ? 'online' : 'offline';
       var conf = (t.confidence || 0).toFixed(2);
+      var taskId = t.task_id || '?';
+      var displayId = (t.id && !t.task_id) ? '#' + t.id : taskId;
       return '<div class="task-row">' +
         '<span class="dot ' + statusClass + '"></span>' +
         '<div>' +
-          '<code style="font-size:0.78rem;">' + (t.task_id || '?') + '</code>' +
-          ' &middot; <span class="task-domain">' + (t.domain || 'general') + '</span>' +
+          '<code style="font-size:0.78rem;">' + displayId + '</code>' +
+          ' &middot; <span class="task-domain">' + (t.domain || t.minister || 'general') + '</span>' +
           ' &middot; conf=' + conf +
         '</div>' +
-        '<span style="color:var(--text-dim);font-size:0.7rem;">' + fmt(t.execution_time_ms, 0) + 'ms</span>' +
-        '<span class="task-time">' + fmtRel(t.timestamp) + '</span>' +
+        '<span style="color:var(--text-dim);font-size:0.7rem;">' + (t.result || t.prompt || '').substring(0, 30) + '</span>' +
+        '<span class="task-time">' + (t.created_at ? new Date(t.created_at).toLocaleTimeString() : '--') + '</span>' +
       '</div>';
     }).join('');
     document.getElementById('taskList').innerHTML = html;
@@ -468,25 +476,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       (summary.total_evolution_cycles || 0) + ' cycles';
   }
 
-  // ── Alerts ──
+  // ── Alerts (prefer DB history, fallback to real-time) ──
+  var alertHistory = null;
   function renderAlerts(alertsData) {
-    var history = alertsData.history || [];
-    document.getElementById('alertCount').textContent = history.length;
+    var items = (alertHistory && alertHistory.length)
+      ? alertHistory
+      : (alertsData && alertsData.history ? alertsData.history : []);
+    document.getElementById('alertCount').textContent = items.length;
     var el = document.getElementById('alertsList');
-    if (!history.length) {
+    if (!items.length) {
       el.innerHTML = '<div class="empty">No alerts — system is healthy</div>';
       return;
     }
-    el.innerHTML = history.slice(0, 15).map(function(a) {
-      var t = new Date(a.timestamp * 1000);
-      return '<div class="alert-item ' + (a.severity || 'info') + '">' +
-        '<span class="alert-sev ' + (a.severity || 'info') + '">' + (a.severity || '').toUpperCase() + '</span>' +
-        '<span class="alert-msg"><strong>' + (a.rule_name || '?') + '</strong> &middot; ' +
-        (a.message || '') +
-        ' <span style="color:var(--text-dim);font-size:0.7rem">(' +
-        (a.metric||'') + ' ' + (a.operator||'') + ' ' + fmt(a.threshold,2) +
-        ', current: ' + fmt(a.current_value,3) + ')</span></span>' +
-        '<span class="alert-time">' + t.toLocaleTimeString() + '</span>' +
+    el.innerHTML = items.slice(0, 15).map(function(a) {
+      var timeStr = '--';
+      if (a.timestamp) {
+        timeStr = new Date(a.timestamp * 1000).toLocaleTimeString();
+      } else if (a.created_at) {
+        timeStr = new Date(a.created_at).toLocaleTimeString();
+      }
+      var sev = a.severity || a.level || 'info';
+      var name = a.rule_name || 'alert';
+      var msg = a.message || '';
+      return '<div class="alert-item ' + sev + '">' +
+        '<span class="alert-sev ' + sev + '">' + sev.toUpperCase() + '</span>' +
+        '<span class="alert-msg"><strong>' + name + '</strong> &middot; ' + msg + '</span>' +
+        '<span class="alert-time">' + timeStr + '</span>' +
       '</div>';
     }).join('');
   }
@@ -525,6 +540,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     fetch(API + '/dashboard/alerts')
       .then(function(r) { return r.json(); })
       .then(function(d) { renderAlerts(d); })
+      .catch(function() {});
+  }
+
+  function fetchTaskHistory() {
+    fetch(API + '/dashboard/task-history?limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        taskHistory = d.history || [];
+        renderTaskList(null);
+      })
+      .catch(function() {});
+  }
+
+  function fetchAlertHistory() {
+    fetch(API + '/dashboard/alert-history?limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        alertHistory = d.history || [];
+        renderAlerts(null);
+      })
       .catch(function() {});
   }
 
@@ -586,6 +621,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   setInterval(fetchMetrics, 3000);
   fetchAlerts();
   setInterval(fetchAlerts, 5000);
+  // Load persisted history once on page load, then periodically
+  fetchTaskHistory();
+  setInterval(fetchTaskHistory, 10000);
+  fetchAlertHistory();
+  setInterval(fetchAlertHistory, 10000);
 </script>
 </body>
 </html>"""
