@@ -94,6 +94,7 @@ class Emperor:
         self._task_engine = TaskEngine(self._court)
         self._app: Any = None  # FastAPI app (lazy)
         self._scheduler: Any = None  # Scheduler (lazy)
+        self._alert_manager: Any = None  # AlertManager (lazy)
 
         # Load persisted state if data_dir set
         if self.config.data_dir:
@@ -368,3 +369,13 @@ class Emperor:
         """
         self.scheduler.schedule_tasks(every_minutes, templates)
         self.scheduler.start()
+
+    # ── Alerts ─────────────────────────────────────────────────────
+
+    @property
+    def alerts(self):
+        """Lazy-loaded AlertManager for health monitoring."""
+        if self._alert_manager is None:
+            from jarvis.alerts import AlertManager
+            self._alert_manager = AlertManager()
+        return self._alert_manager
