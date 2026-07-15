@@ -96,9 +96,16 @@ class Emperor:
         )
         self._court = Court(config=court_cfg)
 
+        # Create default capability registry
+        from jarvis.capability import create_default_registry
+        self._capability_registry = create_default_registry()
+
         from jarvis.court.task_engine import TaskEngine
 
-        self._task_engine = TaskEngine(self._court)
+        self._task_engine = TaskEngine(
+            self._court,
+            capability_registry=self._capability_registry,
+        )
         self._app: Any = None  # FastAPI app (lazy)
         self._scheduler: Any = None  # Scheduler (lazy)
         self._alert_manager: Any = None  # AlertManager (lazy)
@@ -141,6 +148,11 @@ class Emperor:
     def plugins(self):
         """Direct access to the PluginManager."""
         return self._plugin_manager
+
+    @property
+    def capability_registry(self):
+        """Direct access to the CapabilityRegistry."""
+        return self._capability_registry
 
     def _dispatch(self, event: Any, **kwargs: Any) -> Any:
         """Dispatch a lifecycle event to all registered plugins."""

@@ -125,6 +125,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .status-pill.idle { background: rgba(250,204,21,0.12); color: var(--warning); }
   .status-pill.failed { background: rgba(248,113,113,0.12); color: var(--danger); }
 
+  .cap-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.5px;
+    background: rgba(167,139,250,0.15); color: var(--accent-2);
+    border: 1px solid rgba(167,139,250,0.25);
+    margin-right: 6px; vertical-align: middle;
+  }
+
   .meter { width: 100%; height: 6px; background: rgba(255,255,255,0.05);
     border-radius: 3px; overflow: hidden; margin-top: 8px; }
   .meter-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease;
@@ -616,9 +624,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       var statusClass = (t.status === 'completed') ? 'online' : 'offline';
       var conf = (t.confidence != null ? t.confidence : 0).toFixed(2);
       var displayId = t.task_id || '#' + t.id;
+      // Check for capability result marker
+      var capMatch = (t.result || '').match(/\[能力结果:\s*(\w+)\]/);
+      var capBadge = '';
+      if (capMatch) {
+        capBadge = '<span class="cap-badge">' + capMatch[1] + '</span>';
+      }
       return '<div class="task-row">' +
         '<span class="dot ' + statusClass + '"></span>' +
         '<div>' +
+          capBadge +
           '<code style="font-size:0.78rem;">' + displayId + '</code>' +
           ' &middot; <span class="task-domain">' + (t.minister || 'general') + '</span>' +
           ' &middot; conf=' + conf +

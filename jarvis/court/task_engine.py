@@ -122,10 +122,12 @@ class TaskEngine:
         court: Any,  # Court
         llm: Optional[LLMBackend] = None,
         scorer: Optional[Callable[[str, Optional[str]], float]] = None,
+        capability_registry: Optional[Any] = None,
     ):
         self._court = court
         self._llm = llm or _default_llm_backend
         self._scorer = scorer or _simple_confidence
+        self._capability_registry = capability_registry  # CapabilityRegistry instance
 
         self._outcomes: list[TaskOutcome] = []
         self._pending: dict[str, TaskRequest] = {}
@@ -184,8 +186,45 @@ class TaskEngine:
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
+        # 3b. Capability execution — if registry exists, try to augment with real data
+        capability_output = ""
+        if self._capability_registry is not None:
+            try:
+                # Determine domain — prefer request domain, then genome domain
+                exec_domain = request.domain
+                try:
+                    genome = self._court._sm._genomes.get(minister)
+                    if genome:
+                        exec_domain = genome.domain
+                except Exception:
+                    pass
+
+                best_cap = self._capability_registry.find_best(request.prompt, exec_domain)
+                if best_cap is not None:
+                    cap_result = self._capability_registry.execute(
+                        best_cap.name, request.prompt
+                    )
+                    capability_output = (
+                        f"\n\n[能力结果: {best_cap.name}]\n{cap_result['result']}"
+                    )
+                    logger.debug(
+                        "[TaskEngine] Capability '%s' executed for task '%s'",
+                        best_cap.name,
+                        request.id,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[TaskEngine] Capability execution skipped for '%s': %s",
+                    request.id,
+                    exc,
+                )
+                capability_output = ""
+
+        # Combine raw LLM output with capability output
+        combined_response = raw + capability_output
+
         # 4. Score
-        confidence = self._scorer(raw, request.expected)
+        confidence = self._scorer(combined_response, request.expected)
         success = state == TaskState.COMPLETED and confidence > 0.3
 
         merit = confidence * 100
@@ -194,7 +233,7 @@ class TaskEngine:
             task_id=request.id,
             state=state,
             minister=minister,
-            raw_response=raw,
+            raw_response=combined_response,
             success=success,
             confidence=round(confidence, 4),
             execution_time_ms=round(elapsed_ms, 1),
