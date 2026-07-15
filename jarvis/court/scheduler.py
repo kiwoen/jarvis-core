@@ -96,8 +96,9 @@ class Scheduler:
         self._thread: Optional[threading.Thread] = None
         self._started_at: float = 0.0
 
-        # Alert integration
-        self._alert_manager: Any = None  # injected by Emperor.serve
+        # Alert + Healing integration
+        self._alert_manager: Any = None   # injected by Emperor.serve
+        self._healing_engine: Any = None  # injected by Emperor.serve
 
     # ── Convenience methods (require emperor) ──────────────────────
 
@@ -377,13 +378,18 @@ class Scheduler:
                 entry.total_failures += 1
                 logger.exception("[Scheduler] Job '%s' failed", entry.name)
 
-        # Alert evaluation
+        # Alert evaluation + Self-healing
         if self._alert_manager is not None and self._emperor is not None:
             try:
                 state = self._build_state()
-                self._alert_manager.evaluate(state)
+                fired = self._alert_manager.evaluate(state)
+
+                # Route fired alerts to healing engine
+                if self._healing_engine is not None and fired:
+                    rule_names = [a.rule_name for a in fired]
+                    self._healing_engine.handle_batch(rule_names)
             except Exception:
-                logger.exception("[Scheduler] Alert evaluation failed")
+                logger.exception("[Scheduler] Alert/Healing evaluation failed")
 
     def _build_state(self) -> dict:
         """Build a metrics dict for alert evaluation from the emperor."""

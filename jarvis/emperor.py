@@ -96,6 +96,9 @@ class Emperor:
         self._scheduler: Any = None  # Scheduler (lazy)
         self._alert_manager: Any = None  # AlertManager (lazy)
 
+        # Self-healing
+        self._healing_engine: Any = None  # HealingEngine (lazy)
+
         # Load persisted state if data_dir set
         if self.config.data_dir:
             self._load_state()
@@ -210,8 +213,9 @@ class Emperor:
             app.extra["scheduler_running"] = r.state == "RUNNING"
             app.extra["scheduler_jobs"] = len(r.entries)
             app.extra["scheduler_total_runs"] = r.total_runs
-            # Wire alerts into scheduler for auto-evaluation
+            # Wire alerts + healing into scheduler for auto-recovery
             self._scheduler._alert_manager = self.alerts
+            self._scheduler._healing_engine = self.healing
         else:
             app.extra["scheduler_running"] = False
             app.extra["scheduler_jobs"] = 0
@@ -384,3 +388,11 @@ class Emperor:
             from jarvis.alerts import AlertManager
             self._alert_manager = AlertManager()
         return self._alert_manager
+
+    @property
+    def healing(self):
+        """Lazy-loaded HealingEngine for automatic recovery."""
+        if self._healing_engine is None:
+            from jarvis.healing import HealingEngine
+            self._healing_engine = HealingEngine()
+        return self._healing_engine
