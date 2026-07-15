@@ -350,6 +350,8 @@ class Emperor:
         """Start the Scheduler with periodic evolution + tasks.
 
         No-op if the scheduler is already running or no ministers exist.
+        Immediately runs the first evolution + task batch so the dashboard
+        has live data from the moment the server boots.
 
         Returns:
             True if scheduler was started, False otherwise.
@@ -359,19 +361,20 @@ class Emperor:
             return False
         if not self._court.active_ministers:
             return False
-        # Schedule periodic evolution + lightweight demo tasks.
-        # Use internal API so we control cadence from config.
+
+        # Schedule periodic evolution + tasks.
         sched.schedule_evolution(
             interval_minutes=self.config.auto_evolve_interval_minutes,
             cycles=self.config.auto_evolve_cycles,
         )
+        task_templates = [
+            {"prompt": "Summarize today's key events.", "domain": "general"},
+            {"prompt": "Compute 17 * 23 quickly.", "domain": "math"},
+            {"prompt": "Suggest a refactor for a 200-line file.", "domain": "code"},
+        ]
         sched.schedule_tasks(
             interval_minutes=self.config.auto_tasks_interval_minutes,
-            templates=[
-                {"prompt": "Summarize today's key events.", "domain": "general"},
-                {"prompt": "Compute 17 * 23 quickly.", "domain": "math"},
-                {"prompt": "Suggest a refactor for a 200-line file.", "domain": "code"},
-            ],
+            templates=task_templates,
         )
         sched.start()
         logger.info(
@@ -379,6 +382,22 @@ class Emperor:
             self.config.auto_evolve_interval_minutes,
             self.config.auto_tasks_interval_minutes,
         )
+
+        # ── Immediate first run so dashboard shows live data on boot ──
+        try:
+            logger.info("[Emperor] running first evolution (%d cycles) …",
+                        self.config.auto_evolve_cycles)
+            self.evolve(cycles=self.config.auto_evolve_cycles)
+        except Exception:
+            logger.exception("[Emperor] first evolution failed")
+
+        try:
+            logger.info("[Emperor] running first task batch (%d tasks) …",
+                        len(task_templates))
+            self.execute_batch(task_templates)
+        except Exception:
+            logger.exception("[Emperor] first task batch failed")
+
         return True
 
     @property

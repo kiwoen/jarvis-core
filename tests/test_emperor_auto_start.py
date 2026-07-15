@@ -104,7 +104,33 @@ class TestAutoStartScheduler:
         # entries are dicts with "name" key
         names = [e["name"] for e in report.entries]
         assert any("evolution" in n for n in names)
-        assert any("task" in n for n in names)
+
+    def test_immediate_first_run_evolution(self):
+        """First evolution is triggered immediately, not after the interval."""
+        emp = Emperor()
+        emp.register("turing", domain="math")
+        with patch.object(emp, "evolve") as mock_evolve, \
+             patch.object(emp, "execute_batch") as mock_batch:
+            emp._auto_start_scheduler()
+            # First evolution + task batch should have been called once
+            assert mock_evolve.call_count == 1
+            assert mock_evolve.call_args.kwargs.get("cycles") == emp.config.auto_evolve_cycles
+            assert mock_batch.call_count == 1
+            # Templates passed to execute_batch
+            tmpls = mock_batch.call_args.args[0]
+            assert len(tmpls) == 3
+            assert all("prompt" in t and "domain" in t for t in tmpls)
+
+    def test_immediate_first_run_swallows_errors(self):
+        """If first-run evolution/task batch fails, scheduler still starts."""
+        emp = Emperor()
+        emp.register("turing", domain="math")
+        with patch.object(emp, "evolve", side_effect=RuntimeError("boom")), \
+             patch.object(emp, "execute_batch", side_effect=RuntimeError("boom")):
+            # Should not raise
+            started = emp._auto_start_scheduler()
+            assert started is True
+            assert emp.scheduler.state.name == "RUNNING"
 
 
 # ══════════════════════════════════════════════════════════════════
