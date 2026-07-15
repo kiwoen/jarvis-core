@@ -1974,3 +1974,55 @@ class SurvivalMechanism:
             minister.set_genome_injector(GenomeInjector())
         logger.debug("[Evolution] Applied genome+injector to %s: T=%.2f C=%.2f",
                      genome.name, genome.temperature, genome.confidence_baseline)
+
+    # ------------------------------------------------------------------
+    # Convenience: evolve N cycles
+    # ------------------------------------------------------------------
+
+    def emperor_evolve(self, n_cycles: int = 1) -> dict:
+        """Run N evolution cycles and return a structured summary.
+
+        This is the one-shot convenience entry point: call it once and
+        get back a dict with cycle-level breakdown plus aggregate stats.
+        History is auto-recorded if a recorder was provided at init.
+        """
+        if n_cycles < 1:
+            raise ValueError("n_cycles must be >= 1")
+
+        reports: list[EvolutionReport] = []
+        for _ in range(n_cycles):
+            report = self.run_evolution_cycle()
+            reports.append(report)
+
+        # Build summary
+        cycles_data = []
+        for report in reports:
+            cycles_data.append({
+                "cycle": report.cycle,
+                "active": report.active_count,
+                "shadow": report.shadow_count,
+                "eliminated": report.eliminated_count,
+                "new_spawns": report.new_spawns,
+                "actions": len(report.actions_taken),
+            })
+
+        # Compute trends
+        active_trend = [c["active"] for c in cycles_data]
+        first = active_trend[0] if active_trend else 0
+        last = active_trend[-1] if active_trend else 0
+
+        summary = {
+            "total_cycles": n_cycles,
+            "active_start": first,
+            "active_end": last,
+            "delta": last - first,
+            "cycles": cycles_data,
+        }
+
+        # Attach history export if available
+        if self._history is not None:
+            summary["history_cycle_count"] = self._history.cycle_count
+            if n_cycles > 1:
+                summary["merit_trend"] = self._history.trend("merit_mean")
+
+        return summary
