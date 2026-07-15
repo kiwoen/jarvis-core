@@ -117,6 +117,22 @@ class AlertManager:
             return True
         return False
 
+    def disable_rule(self, name: str) -> bool:
+        """Disable a rule. Return True if the rule exists."""
+        rule = self._rules.get(name)
+        if rule is None:
+            return False
+        rule.enabled = False
+        return True
+
+    def enable_rule(self, name: str) -> bool:
+        """Enable a rule. Return True if the rule exists."""
+        rule = self._rules.get(name)
+        if rule is None:
+            return False
+        rule.enabled = True
+        return True
+
     def get_rule(self, name: str) -> Optional[AlertRule]:
         """Get a rule by name (returns a copy)."""
         r = self._rules.get(name)
