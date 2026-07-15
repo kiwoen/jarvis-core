@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from jarvis.court.config import SurvivalConfig
@@ -207,6 +208,61 @@ def create_app(
         return {
             "configured": config is not None or bool(gp),
             "genome_path": gp,
+        }
+
+    # ── Dashboard ───────────────────────────────────────────────────
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    def dashboard():
+        """Serve the monitoring dashboard."""
+        from jarvis.dashboard_html import generate_html
+        return generate_html(api_base=f"http://{app.extra.get('host', '127.0.0.1')}:{app.extra.get('port', 9020)}")
+
+    @app.get("/dashboard/status")
+    def dashboard_status():
+        """Aggregated status for the dashboard frontend."""
+        snap = court.inspect.snapshot()
+        ranking = court.merit_ranking if hasattr(court, 'merit_ranking') else []
+
+        ministers = []
+        for m in snap.ministers:
+            ministers.append({
+                "name": m.name,
+                "domain": getattr(m, "domain", "general"),
+                "merit": getattr(m, "merit", 0.0),
+                "confidence": getattr(m, "confidence", 0.0),
+                "tasks_completed": getattr(m, "tasks_completed", 0),
+                "success_rate": getattr(m, "success_rate", 0.0),
+                "status": m.status,
+            })
+
+        # Sort by merit descending
+        ministers.sort(key=lambda x: x["merit"], reverse=True)
+
+        return {
+            "court": {
+                "active_ministers": snap.active_count,
+                "total_ministers": snap.total_ministers,
+                "cycle": getattr(court, "cycle", 0),
+                "top_minister": str(ranking[0]) if ranking else "none",
+            },
+            "ministers": ministers,
+            "tasks": {
+                "total": getattr(court, "_total_tasks", 0),
+                "completed": getattr(court, "_completed_tasks", 0),
+                "failed": getattr(court, "_failed_tasks", 0),
+                "success_rate": getattr(court, "success_rate", 0.0),
+                "avg_merit": getattr(court, "avg_merit", 0.0),
+            },
+            "config": {
+                "min_ministers": getattr(court, "min_ministers", 0),
+                "max_ministers": getattr(court, "max_ministers", 0),
+                "crossover_rate": getattr(court, "crossover_rate", 0.0),
+                "api_port": app.extra.get("port", 9020),
+            },
+            "scheduler_running": app.extra.get("scheduler_running", False),
+            "scheduler_jobs": app.extra.get("scheduler_jobs", 0),
+            "scheduler_total_runs": app.extra.get("scheduler_total_runs", 0),
         }
 
     return app

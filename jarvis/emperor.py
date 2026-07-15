@@ -185,25 +185,42 @@ class Emperor:
 
     # ── API server ─────────────────────────────────────────────────
 
-    def serve(self, port: int = 0) -> None:
+    def serve(self, port: int = 0, host: str = "") -> None:
         """Start the REST API server (blocking).
 
         Args:
             port: Port to listen on (uses config.api_port if 0).
+            host: Host to bind (uses config.api_host if empty).
         """
         if port == 0:
             port = self.config.api_port or 9020
+        if not host:
+            host = self.config.api_host or "127.0.0.1"
 
         from jarvis.court_api import create_app
 
         app = create_app(court=self._court)
+        app.extra["host"] = host
+        app.extra["port"] = port
+
+        # Inject scheduler state if running
+        if self._scheduler is not None:
+            r = self._scheduler.report()
+            app.extra["scheduler_running"] = r.state == "RUNNING"
+            app.extra["scheduler_jobs"] = len(r.entries)
+            app.extra["scheduler_total_runs"] = r.total_runs
+        else:
+            app.extra["scheduler_running"] = False
+            app.extra["scheduler_jobs"] = 0
+            app.extra["scheduler_total_runs"] = 0
+
         self._app = app
 
         import uvicorn
 
-        logger.info("[Emperor] API server → http://%s:%d",
-                    self.config.api_host, port)
-        uvicorn.run(app, host=self.config.api_host, port=port)
+        logger.info("[Emperor] API + Dashboard → http://%s:%d", host, port)
+        logger.info("[Emperor] Dashboard → http://%s:%d/dashboard", host, port)
+        uvicorn.run(app, host=host, port=port)
 
     @property
     def app(self):
@@ -211,6 +228,8 @@ class Emperor:
         if self._app is None:
             from jarvis.court_api import create_app
             self._app = create_app(court=self._court)
+            self._app.extra.setdefault("host", self.config.api_host or "127.0.0.1")
+            self._app.extra.setdefault("port", self.config.api_port or 9020)
         return self._app
 
     # ── Status / Dashboard ─────────────────────────────────────────
