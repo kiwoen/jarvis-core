@@ -191,6 +191,30 @@ class TestAPIPersistence:
 
 
 # ══════════════════════════════════════════════════════════════════
+# Config
+# ══════════════════════════════════════════════════════════════════
+
+class TestAPIConfig:
+    def test_config_endpoint_default(self, client):
+        r = client.get("/court/config")
+        assert r.status_code == 200
+        data = r.json()
+        assert "configured" in data
+        assert "genome_path" in data
+
+    def test_load_config_missing_file(self, client):
+        r = client.post("/court/config/load", json={"path": "nonexistent.yaml"})
+        assert r.status_code == 404
+
+    def test_load_config_valid(self, client, tmp_path):
+        path = tmp_path / "test.yaml"
+        path.write_text("elitism_count: 5\ncrossover_rate: 0.8\n")
+        r = client.post("/court/config/load", json={"path": str(path)})
+        assert r.status_code == 200
+        assert "Config loaded" in r.json()["message"]
+
+
+# ══════════════════════════════════════════════════════════════════
 # Validation
 # ══════════════════════════════════════════════════════════════════
 
