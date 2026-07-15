@@ -1,303 +1,318 @@
-"""Emperor CLI — one command to rule the evolutionary court.
+#!/usr/bin/env python3
+"""Emperor Core CLI — 多领域 AI Agent 管理系统命令行工具。
 
 Usage:
-    emperor init [--path DIR]              Create a new court with default config
-    emperor status [--json] [--path DIR]   Show court state summary
-    emperor register [--name NAME] ...     Register a minister
-    emperor evolve [--cycles N]            Run evolution cycles
-    emperor serve [--port PORT]            Start REST API server
-    emperor config [show|init]             View or scaffold config
-    emperor list                           List all ministers
-    emperor history [--limit N]            Show evolution history
-
-Examples:
-    emperor init --path ./my_court
-    emperor register --domain math --name turing
-    emperor evolve --cycles 5
-    emperor serve --port 9000
+    jarvis serve                    启动 Dashboard 服务器
+    jarvis task <prompt>            提交任务
+    jarvis status                   查看系统状态
+    jarvis ministers                列出所有大臣
+    jarvis evolve                   手动触发进化
+    jarvis alerts                   查看活跃告警
+    jarvis --version                显示版本号
 """
 
 from __future__ import annotations
 
-import json
+import argparse
 import sys
-from pathlib import Path
-from typing import Optional
+import textwrap
 
-import click
+VERSION = "0.2.0"
 
-
-# ══════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════
-
-def _load_or_create_court(court_dir: Path):
-    """Load genomes from court_dir if they exist, otherwise create fresh."""
-    from jarvis.court.court import Court
-
-    court = Court()
-    genome_file = court_dir / "genomes.json"
-    genome_file.parent.mkdir(parents=True, exist_ok=True)
-    court._sm._genome_path = str(genome_file)
-
-    if genome_file.exists():
-        try:
-            court.load_genomes(str(genome_file))
-        except Exception:
-            click.echo(
-                f"Warning: failed to load genomes from {genome_file}",
-                err=True,
-            )
-
-    history_file = court_dir / "history.json"
-    if history_file.exists():
-        try:
-            court.load_history(str(history_file))
-        except Exception:
-            pass
-
-    return court
+# ANSI colors — only enabled when stdout is a TTY
+_GREEN = "\033[92m"
+_RED = "\033[91m"
+_YELLOW = "\033[93m"
+_BLUE = "\033[94m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
 
 
-def _save_court(court, court_dir: Optional[Path] = None):
-    """Persist genomes and history if paths configured."""
-    court.save_genomes()
-
-    if court_dir:
-        history_file = court_dir / "history.json"
-        court.save_history(str(history_file))
+def _c(text: str, code: str) -> str:
+    """Wrap text in ANSI code if stdout is a TTY."""
+    if sys.stdout.isatty():
+        return f"{code}{text}{_RESET}"
+    return text
 
 
-# ══════════════════════════════════════════════════════════════════
-# CLI
-# ══════════════════════════════════════════════════════════════════
+def cmd_serve(args: argparse.Namespace) -> None:
+    """启动 Dashboard 服务器。"""
+    from jarvis.emperor import Emperor, EmperorConfig
 
-@click.group()
-@click.version_option(version="0.1.0", prog_name="emperor")
-@click.pass_context
-def cli(ctx: click.Context):
-    """Emperor — evolutionary AI court management CLI."""
-    ctx.ensure_object(dict)
+    cfg = EmperorConfig()
+    if args.port:
+        cfg.api_port = args.port
+    if args.host:
+        cfg.api_host = args.host
 
-
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-def init(path: str):
-    """Initialize a new court directory with default config and founder genome."""
-    court_dir = Path(path).resolve()
-    court_dir.mkdir(parents=True, exist_ok=True)
-
-    # Seed default config
-    config_file = court_dir / "config.yaml"
-    if not config_file.exists():
-        config_file.write_text(
-            "elitism_count: 2\n"
-            "crossover_rate: 0.3\n"
-            "mutation_rate: 0.05\n"
-            "shadow_count: 3\n"
-            "cycle_limit: 50\n"
-            "task_difficulty: 0.5\n"
-            "diversity_weight: 0.3\n"
-            "stability_blend: 0.2\n",
-            encoding="utf-8",
-        )
-        click.echo(f"Default config written to {config_file}")
-
-    click.echo(f"Court initialized at {court_dir}")
-    click.echo("Next: emperor register --name turing --domain math")
+    emperor = Emperor(config=cfg)
+    emperor.serve(host=args.host or "127.0.0.1", port=args.port or 9020)
 
 
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.option(
-    "--fmt", "output_format", type=click.Choice(["text", "json"]),
-    default="text", help="Output format"
-)
-def status(path: str, output_format: str):
-    """Show court state summary."""
-    court = _load_or_create_court(Path(path))
-    if output_format == "json":
-        snap = court.inspect.snapshot()
-        click.echo(json.dumps(
-            {"total_ministers": snap.total_ministers,
-             "active_count": snap.active_count},
-            indent=2, default=str,
-        ))
+def cmd_task(args: argparse.Namespace) -> None:
+    """提交任务。"""
+    from jarvis.emperor import Emperor
+
+    emperor = Emperor()
+    report = emperor.execute_task(args.prompt, domain=args.domain)
+
+    success = report.get("success", False)
+    status_label = _c("成功", _GREEN) if success else _c("失败", _RED)
+
+    print()
+    print(f"  任务ID: {report.get('task_id', 'N/A')}")
+    print(f"  大臣:   {report.get('minister', 'N/A')}")
+    print(f"  状态:   {status_label}")
+    print(f"  置信度: {report.get('confidence', 0):.2f}")
+    print(f"  耗时:   {report.get('execution_time_ms', 0):.0f}ms")
+    print(f"  {'=' * 50}")
+    response = report.get("response", "")
+    if response:
+        print(response)
     else:
-        click.echo(court.summary())
+        err = report.get("error", "")
+        if err:
+            print(f"  错误: {err}")
+    print(f"  {'=' * 50}")
 
 
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.option("--name", "-n", default=None, help="Minister name (auto if omitted)")
-@click.option("--domain", "-d", default="general",
-              help="Domain: general, math, code, etc.")
-@click.option("--temperature", "-t", type=float, default=0.7,
-              help="Temperature (0.0-2.0)")
-def register(path: str, name: Optional[str], domain: str, temperature: float):
-    """Register a new minister into the court."""
-    court = _load_or_create_court(Path(path))
-    result = court.register(name=name, domain=domain, temperature=temperature)
-    click.echo(f"Registered minister: {result}")
-    _save_court(court, Path(path))
+def cmd_status(args: argparse.Namespace) -> None:
+    """查看系统状态。"""
+    from jarvis.emperor import Emperor
 
-
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.option("--cycles", "-c", type=int, default=1, help="Number of cycles")
-def evolve(path: str, cycles: int):
-    """Run evolution cycles on the court."""
-    court = _load_or_create_court(Path(path))
-
-    if not court.active_ministers:
-        click.echo(
-            "No active ministers. Register one first: emperor register"
-        )
-        raise SystemExit(1)
-
-    if cycles > 100:
-        click.echo(
-            "Warning: large cycle count; "
-            "consider --cycles 10-20 for initial runs"
-        )
-
-    result = court.evolve(cycles)
-    click.echo(json.dumps(result, indent=2, default=str))
-    _save_court(court, Path(path))
-
-
-@cli.command("list")
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-def list_ministers(path: str):
-    """List all ministers in the court."""
-    court = _load_or_create_court(Path(path))
+    emperor = Emperor()
+    court = emperor.court
     snap = court.inspect.snapshot()
-    click.echo(f"Total: {snap.total_ministers}  "
-               f"Active: {snap.active_count}")
-    click.echo("-" * 66)
-    for m in snap.ministers:
-        icon = "*" if m.status == "active" else " "
-        click.echo(
-            f" {icon} {m.name:<16s}  "
-            f"merit={m.merit:.3f}  "
-            f"temp={m.temperature:.2f}  "
-            f"gen={m.generation}"
+    ranking = court.merit_ranking
+
+    print()
+    print(f"  {_c('Emperor Core', _BOLD)} v{VERSION}")
+    print(f"  大臣总数:   {snap.total_ministers}")
+    print(f"  活跃大臣:   {snap.active_count}")
+    print(f"  进化代数:   {court.cycle}")
+
+    if ranking:
+        top = ranking[0]
+        avg_merit = sum(r.merit_score for r in ranking) / len(ranking)
+        print(f"  平均功绩:   {avg_merit:.1f}")
+        print(f"  成功率:     {court.success_rate:.1%}")
+        print(f"  榜首:       {top.minister} (merit={top.merit_score:.1f})")
+
+    sched = getattr(emperor, "_scheduler", None)
+    if sched is not None and hasattr(sched, "state"):
+        from jarvis.court.scheduler import SchedulerState
+        state = sched.state
+        paused = state == SchedulerState.PAUSED
+        running = state == SchedulerState.RUNNING
+        state_str = (
+            _c("运行中", _GREEN) if running
+            else _c("已暂停", _YELLOW) if paused
+            else state.name
         )
+        print(f"  调度状态:   {state_str}")
+
+    domains: set[str] = set()
+    for m in snap.ministers:
+        domains.add(m.domain)
+    print(f"  活跃领域:   {len(domains)} ({', '.join(sorted(domains))})")
+    print()
 
 
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.option("--limit", "-l", type=int, default=10,
-              help="Max recent cycles to show")
-def history(path: str, limit: int):
-    """Show evolution cycle history."""
-    court = _load_or_create_court(Path(path))
-    total = len(court.history)
-    if total == 0:
-        click.echo("No evolution history yet. Run: emperor evolve")
+def cmd_ministers(args: argparse.Namespace) -> None:
+    """列出所有大臣。"""
+    from jarvis.emperor import Emperor
+
+    emperor = Emperor()
+    court = emperor.court
+    snap = court.inspect.snapshot()
+
+    if not snap.ministers:
+        print("\n  暂无大臣\n")
         return
 
-    start = max(0, total - limit)
-    click.echo(f"Showing cycles {start}–{total - 1} of {total}")
-    click.echo("-" * 50)
-    for i in range(start, total):
-        rec = court.history[i]
-        click.echo(
-            f"  Cycle {rec.cycle:>3d}:  "
-            f"active={rec.active_count}  "
-            f"merit_avg={rec.merit_mean:.3f}"
-        )
+    genomes = court._sm._genomes
+    ranking_map = {r.minister: r for r in court.merit_ranking}
 
+    merged = []
+    for m in snap.ministers:
+        genome = genomes.get(m.name)
+        merit_report = ranking_map.get(m.name)
+        merit = float(merit_report.merit_score) if merit_report else float(m.merit)
+        streak = getattr(genome, "success_streak", 0) if genome else 0
+        fail_streak = getattr(genome, "failure_streak", 0) if genome else 0
+        total_tasks = getattr(genome, "total_tasks", 0) if genome else 0
+        capability_hits = getattr(genome, "capability_hits", 0) if genome else 0
 
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.option("--port", type=int, default=8000, help="Server port")
-@click.option("--host", default="127.0.0.1", help="Server host")
-def serve(path: str, port: int, host: str):
-    """Start the Court REST API server."""
-    import uvicorn
-    from jarvis.court.config import SurvivalConfig
-    from jarvis.court_api import create_app
-
-    court_dir = Path(path)
-    config_path = court_dir / "config.yaml"
-
-    config = None
-    if config_path.exists():
-        config = SurvivalConfig.from_yaml(str(config_path))
-        click.echo(f"Loaded config from {config_path}")
-
-    app = create_app(config=config)
-    click.echo(f"Emperor Court API → http://{host}:{port}")
-    click.echo(f"Court directory: {court_dir}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
-
-
-@cli.command()
-@click.option(
-    "--path", "-p", type=click.Path(), default="./court",
-    help="Court directory path",
-)
-@click.argument("action", type=click.Choice(["show", "init"]))
-def config(path: str, action: str):
-    """Manage court configuration.
-
-    ACTION is one of: show, init.
-    """
-    court_dir = Path(path)
-    config_file = court_dir / "config.yaml"
-
-    if action == "init":
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(
-            "elitism_count: 2\n"
-            "crossover_rate: 0.3\n"
-            "mutation_rate: 0.05\n"
-            "shadow_count: 3\n"
-            "cycle_limit: 50\n"
-            "task_difficulty: 0.5\n"
-            "diversity_weight: 0.3\n"
-            "stability_blend: 0.2\n",
-            encoding="utf-8",
-        )
-        click.echo(f"Config written to {config_file}")
-    elif action == "show":
-        if config_file.exists():
-            click.echo(config_file.read_text(encoding="utf-8"))
+        if streak >= 3:
+            status = f"{_c(f'{streak}连胜', _GREEN)}"
+        elif fail_streak >= 3:
+            status = f"{_c(f'{fail_streak}连败', _RED)}"
         else:
-            click.echo(
-                f"No config at {config_file}. "
-                "Run 'emperor config init' to create one."
-            )
+            status = "--"
+
+        merged.append({
+            "name": m.name,
+            "domain": m.domain,
+            "merit": merit,
+            "status": status,
+            "streak": streak,
+            "fail_streak": fail_streak,
+            "total_tasks": total_tasks,
+            "capability_hits": capability_hits,
+        })
+
+    merged.sort(key=lambda x: x["merit"], reverse=True)
+
+    print()
+    header = f"  {'排名':<4} {'名称':<16} {'领域':<12} {'功绩':<16} {'任务':<8} {'状态'}"
+    print(header)
+    print(f"  {'-' * 4} {'-' * 16} {'-' * 12} {'-' * 16} {'-' * 8} {'-' * 12}")
+
+    for i, m in enumerate(merged, 1):
+        bar_len = min(int(m["merit"] / 5), 20)
+        bar = _c("█" * bar_len + "░" * (20 - bar_len), _BLUE)
+        merit_str = f"{bar} {m['merit']:.0f}"
+
+        tasks_str = f"{m['total_tasks']}"
+        if m["total_tasks"] > 0:
+            hit_rate = m["capability_hits"] * 100 // m["total_tasks"]
+            tasks_str += f"({hit_rate}%)"
+
+        print(f"  {i:<4} {m['name']:<16} {m['domain']:<12} {merit_str:<28} {tasks_str:<8} {m['status']}")
+    print()
+
+
+def cmd_evolve(args: argparse.Namespace) -> None:
+    """手动触发进化。"""
+    from jarvis.emperor import Emperor
+
+    emperor = Emperor()
+    court = emperor.court
+
+    if not court.active_ministers:
+        print(f"\n  {_c('无活跃大臣，请先注册大臣', _YELLOW)}\n")
+        return
+
+    print(f"\n  {_c('正在执行进化...', _BOLD)}")
+    try:
+        result = court.evolve(args.cycles)
+        if isinstance(result, dict):
+            active = result.get("active_count", "?")
+            eliminated = result.get("eliminated_count", "?")
+            spawned = result.get("new_spawns", "?")
+            print(f"  {_c('进化完成', _GREEN)}: active={active}, eliminated={eliminated}, spawned={spawned}")
+        else:
+            print(f"  {_c('进化完成', _GREEN)}")
+    except Exception as e:
+        print(f"  {_c(f'进化失败: {e}', _RED)}")
+    print()
+
+
+def cmd_alerts(args: argparse.Namespace) -> None:
+    """查看活跃告警。"""
+    from jarvis.emperor import Emperor
+
+    emperor = Emperor()
+    alert_manager = emperor.alerts
+
+    if alert_manager is None:
+        print("\n  告警管理器未初始化\n")
+        return
+
+    history = alert_manager.history(limit=20)
+    if not history:
+        print(f"\n  {_c('无活跃告警', _GREEN)}\n")
+        return
+
+    level_map = {
+        "critical": _c("CRIT", _RED),
+        "warning": _c("WARN", _YELLOW),
+        "info": _c("INFO", _BLUE),
+    }
+
+    print(f"\n  {'级别':<10} {'规则':<30} {'消息'}")
+    print(f"  {'-' * 10} {'-' * 30} {'-' * 40}")
+    for a in history:
+        level_str = level_map.get(a.severity, a.severity.upper())
+        rule = a.rule_name[:30]
+        msg = (a.message or "")[:60]
+        print(f"  {level_str:<16} {rule:<30} {msg}")
+    print()
 
 
 # ══════════════════════════════════════════════════════════════════
-# Entry points
+# Main entry point
 # ══════════════════════════════════════════════════════════════════
 
-def main():
-    cli(prog_name="emperor")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="jarvis",
+        description="Emperor Core — 多领域 AI Agent 管理系统",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            示例:
+              jarvis serve                       启动 Dashboard
+              jarvis serve --port 8080           指定端口
+              jarvis task "计算 2+3"             提交任务
+              jarvis task --domain math "计算 pi" 指定领域
+              jarvis status                      查看状态
+              jarvis ministers                   大臣列表
+              jarvis evolve                      手动进化
+              jarvis alerts                      告警列表
+        """),
+    )
+
+    parser.add_argument(
+        "--version", action="version", version=f"jarvis {VERSION}"
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+
+    # ── serve ──
+    serve_parser = subparsers.add_parser("serve", help="启动 Dashboard 服务器")
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1", help="监听地址 (默认: 127.0.0.1)"
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=0, help="监听端口 (默认: 9020)"
+    )
+    serve_parser.set_defaults(func=cmd_serve)
+
+    # ── task ──
+    task_parser = subparsers.add_parser("task", help="提交任务")
+    task_parser.add_argument("prompt", help="任务描述")
+    task_parser.add_argument(
+        "--domain", "-d", default="general", help="任务领域 (默认: general)"
+    )
+    task_parser.set_defaults(func=cmd_task)
+
+    # ── status ──
+    status_parser = subparsers.add_parser("status", help="系统状态")
+    status_parser.set_defaults(func=cmd_status)
+
+    # ── ministers ──
+    ministers_parser = subparsers.add_parser("ministers", help="大臣列表")
+    ministers_parser.set_defaults(func=cmd_ministers)
+
+    # ── evolve ──
+    evolve_parser = subparsers.add_parser("evolve", help="手动进化")
+    evolve_parser.add_argument(
+        "--cycles", "-c", type=int, default=1, help="进化轮数 (默认: 1)"
+    )
+    evolve_parser.set_defaults(func=cmd_evolve)
+
+    # ── alerts ──
+    alerts_parser = subparsers.add_parser("alerts", help="告警列表")
+    alerts_parser.set_defaults(func=cmd_alerts)
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
 
 
 if __name__ == "__main__":
