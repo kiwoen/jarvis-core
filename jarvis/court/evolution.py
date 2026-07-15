@@ -31,6 +31,7 @@ from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from jarvis.court.config import SurvivalConfig
+    from jarvis.court.history import EvolutionHistory
 
 logger = logging.getLogger("jarvis.court.evolution")
 
@@ -358,6 +359,7 @@ class SurvivalMechanism:
         strategy_selector: Optional[StrategySelector] = None,
         genome_generator: Optional[GenomeGenerator] = None,
         genome_path: Optional[str] = None,
+        history: Optional["EvolutionHistory"] = None,
     ) -> None:
         # ── Sliding merit: auto-wrap if enabled and board is plain MeritBoard ──
         if (
@@ -435,6 +437,9 @@ class SurvivalMechanism:
                 logger.info(
                     "Loaded %d genomes from %s", len(loaded), genome_path,
                 )
+
+        # ── History recorder ───────────────────────────────────────
+        self._history = history
 
     # ------------------------------------------------------------------
     # Registration
@@ -916,7 +921,7 @@ class SurvivalMechanism:
         if self._genome_path:
             self.save_genomes()
 
-        return EvolutionReport(
+        report = EvolutionReport(
             cycle=self._cycle_count,
             actions_taken=actions,
             active_count=active,
@@ -927,7 +932,14 @@ class SurvivalMechanism:
             recommendations=recommendations,
         )
 
-    # ------------------------------------------------------------------
+        # ── History recording ──────────────────────────────────────
+        if self._history is not None:
+            from jarvis.court.inspector import CourtInspector
+            inspector = CourtInspector(self)
+            snapshot = inspector.snapshot()
+            self._history.record(report, snapshot)
+
+        return report
     # Genome persistence
     # ------------------------------------------------------------------
 
