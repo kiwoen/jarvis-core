@@ -99,6 +99,11 @@ class Emperor:
         # Self-healing
         self._healing_engine: Any = None  # HealingEngine (lazy)
 
+        # Plugin system
+        from jarvis.plugin import LifecycleEvent, PluginManager
+        self._plugin_manager: Any = PluginManager()
+        self._dispatch(LifecycleEvent.ON_INIT, emperor=self)
+
         # Load persisted state if data_dir set
         if self.config.data_dir:
             self._load_state()
@@ -118,11 +123,25 @@ class Emperor:
         """Direct access to the TaskEngine."""
         return self._task_engine
 
+    @property
+    def plugins(self):
+        """Direct access to the PluginManager."""
+        return self._plugin_manager
+
+    def _dispatch(self, event: Any, **kwargs: Any) -> Any:
+        """Dispatch a lifecycle event to all registered plugins."""
+        return self._plugin_manager.dispatch(event, **kwargs)
+
     def register(self, name: str, domain: str = "general",
                  temperature: float = 0.7) -> None:
         """Register a new minister."""
+        from jarvis.plugin import LifecycleEvent
+
         self._court.register(name, domain=domain,
                              temperature=temperature)
+        self._dispatch(LifecycleEvent.ON_MINISTER_REGISTER,
+                       minister_name=name, domain=domain,
+                       temperature=temperature)
 
     def register_many(self, names: list[str], domain: str = "general",
                       temperature: float = 0.7) -> None:
@@ -133,9 +152,19 @@ class Emperor:
 
     def evolve(self, cycles: int = 1) -> dict:
         """Run evolution cycles and return summary."""
+        from jarvis.plugin import LifecycleEvent
+
         if cycles < 1:
             raise ValueError("cycles must be >= 1")
-        return self._court.evolve(cycles)
+        self._dispatch(LifecycleEvent.ON_EVOLVE_START, cycles=cycles)
+        try:
+            result = self._court.evolve(cycles)
+        except Exception as e:
+            self._dispatch(LifecycleEvent.ON_TASK_ERROR, error=e,
+                           context="evolve")
+            raise
+        self._dispatch(LifecycleEvent.ON_EVOLVE_END, result=result)
+        return result
 
     # ── Task execution ─────────────────────────────────────────────
 
@@ -149,6 +178,7 @@ class Emperor:
     ) -> dict:
         """Execute a single task and return outcome as dict."""
         from jarvis.court.task_engine import TaskRequest
+        from jarvis.plugin import LifecycleEvent
 
         if not task_id:
             import uuid
@@ -161,9 +191,13 @@ class Emperor:
             expected=expected or None,
             deadline_seconds=self.config.max_task_timeout,
         )
+
+        self._dispatch(LifecycleEvent.ON_TASK_BEFORE,
+                       task_id=task_id, prompt=prompt, domain=domain)
+
         outcome = self._task_engine.execute(req)
 
-        return {
+        result = {
             "task_id": outcome.task_id,
             "minister": outcome.minister,
             "success": outcome.success,
@@ -173,6 +207,14 @@ class Emperor:
             "response": outcome.raw_response,
             "error": outcome.error,
         }
+
+        if outcome.success:
+            self._dispatch(LifecycleEvent.ON_TASK_AFTER, outcome=result)
+        else:
+            self._dispatch(LifecycleEvent.ON_TASK_ERROR,
+                           task_id=task_id, error=outcome.error)
+
+        return result
 
     def execute_batch(self, tasks: list[dict]) -> list[dict]:
         """Execute a batch of tasks. Each dict: {prompt, domain?, expected?}."""
@@ -345,6 +387,9 @@ class Emperor:
 
     def shutdown(self) -> None:
         """Graceful shutdown — stop scheduler, save state, clean up."""
+        from jarvis.plugin import LifecycleEvent
+
+        self._dispatch(LifecycleEvent.ON_SHUTDOWN, emperor=self)
         if self._scheduler is not None:
             self._scheduler.stop()
         if self.config.data_dir:
