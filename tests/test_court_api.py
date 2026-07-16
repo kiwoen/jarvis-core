@@ -464,3 +464,18 @@ class TestDashboardLiveEndpoint:
         assert "weather_text" in data
         assert "news_text" in data
         assert isinstance(data["weather"], dict)
+
+
+class TestCapabilityStatsEndpoint:
+    def test_capability_stats_endpoint(self, client):
+        """GET /api/dashboard/capability-stats 返回饼图数据"""
+        resp = client.get("/api/dashboard/capability-stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "labels" in data
+        assert "values" in data
+        assert "total" in data
+        assert isinstance(data["labels"], list)
+        assert isinstance(data["values"], list)
+        assert isinstance(data["total"], int)
+        assert len(data["labels"]) == len(data["values"])

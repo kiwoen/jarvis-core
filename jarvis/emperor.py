@@ -317,6 +317,7 @@ class Emperor:
                     result=result["response"],
                     confidence=result["confidence"],
                     status="completed" if result["success"] else "failed",
+                    capability=domain,
                 )
             except Exception:
                 logger.warning("[Emperor] Failed to persist task to DB")

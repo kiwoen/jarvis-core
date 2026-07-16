@@ -865,6 +865,29 @@ def create_app(
             "news_text": news_result.get("result", "新闻获取失败"),
         }
 
+    # ── Dashboard capability stats endpoint ──────────────────────
+
+    @app.get("/api/dashboard/capability-stats")
+    def capability_stats():
+        """能力命中统计（饼图数据）"""
+        db = app.extra.get("db")
+        if db is None:
+            return {"labels": [], "values": [], "total": 0}
+
+        tasks = db.get_task_history(limit=10000)
+        stats: dict[str, int] = {}
+        for t in tasks:
+            cap = t.get("capability", "") or "general"
+            stats[cap] = stats.get(cap, 0) + 1
+
+        sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)
+
+        return {
+            "labels": [s[0] for s in sorted_stats],
+            "values": [s[1] for s in sorted_stats],
+            "total": sum(s[1] for s in sorted_stats),
+        }
+
     # ── SSE streaming endpoint ────────────────────────────────────
 
     @app.get("/api/events")

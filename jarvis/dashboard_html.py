@@ -749,6 +749,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div><!-- .panel-body -->
 </div>
 
+<!-- 能力命中统计饼图 -->
+<div class="panel" id="panel-capability-stats" style="min-width:0;">
+  <div class="panel-header">
+    <h2>能力统计</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-capability-stats')">▼</button>
+  </div>
+  <div class="panel-body">
+    <div id="capability-chart" style="width:100%;height:280px;"></div>
+    <div id="capability-legend" style="padding:8px 12px;font-size:12px;color:var(--text-secondary);text-align:center;"></div>
+  </div>
+</div>
+
 <!-- Recent tasks panel -->
 <div class="panel" id="panel-tasks">
   <div class="panel-header">
@@ -1861,6 +1873,69 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   // Restore panel collapse state on load
   restorePanelState();
 
+  // ═══ Capability pie chart ═══════════════════════════════════
+
+  var capabilityChart = null;
+
+  async function refreshCapabilityStats() {
+    var chartDom = document.getElementById('capability-chart');
+    if (!chartDom) return;
+
+    try {
+      var resp = await fetch(API + '/api/dashboard/capability-stats');
+      var data = await resp.json();
+
+      if (capabilityChart) { capabilityChart.dispose(); }
+
+      capabilityChart = echarts.init(chartDom);
+
+      var COLORS = [
+        '#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
+        '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#48b8d0',
+        '#d48265', '#c23531'
+      ];
+
+      capabilityChart.setOption({
+        tooltip: {
+          trigger: 'item',
+          formatter: '{b}: {c} ({d}%)'
+        },
+        legend: { show: false },
+        series: [{
+          type: 'pie',
+          radius: ['40%', '70%'],
+          center: ['50%', '50%'],
+          avoidLabelOverlap: false,
+          itemStyle: {
+            borderRadius: 4,
+            borderColor: 'var(--bg-primary, #1a1a2e)',
+            borderWidth: 3
+          },
+          label: { show: false },
+          emphasis: {
+            label: { show: true, fontSize: 14, fontWeight: 'bold' }
+          },
+          color: COLORS,
+          data: data.labels.map(function(label, i) {
+            return { name: label, value: data.values[i] };
+          })
+        }]
+      });
+
+      var legendEl = document.getElementById('capability-legend');
+      if (legendEl) {
+        legendEl.innerHTML = '<span style="color:var(--text-primary);">'
+          + data.total + ' 次命中</span>';
+      }
+
+      window.addEventListener('resize', function() {
+        capabilityChart && capabilityChart.resize();
+      });
+    } catch (e) {
+      console.error('Capability stats fetch failed:', e);
+    }
+  }
+
   // Initialize theme first (before any rendering)
   initTheme();
 
@@ -1882,6 +1957,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   setInterval(refreshHealth, 10000);
   refreshLive();
   setInterval(refreshLive, 300000);
+  refreshCapabilityStats();
+  setInterval(refreshCapabilityStats, 60000);
 </script>
 </body>
 </html>"""

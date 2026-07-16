@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS task_history (
     result TEXT,
     confidence REAL,
     status TEXT DEFAULT 'completed',
+    capability TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -77,7 +78,19 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._ensure_tables()
+        self._migrate()
         logger.info("[Database] Initialized at %s", db_path)
+
+    def _migrate(self) -> None:
+        """Run schema migrations for existing databases."""
+        with self._lock:
+            # v2: add capability column to task_history
+            try:
+                self._conn.execute(
+                    "ALTER TABLE task_history ADD COLUMN capability TEXT DEFAULT ''"
+                )
+            except Exception:
+                pass  # column already exists
 
     # ── Table bootstrap ────────────────────────────────────────────
 
@@ -99,13 +112,15 @@ class Database:
         result: Optional[str],
         confidence: Optional[float],
         status: str = "completed",
+        capability: str = "",
     ) -> int:
         """Insert a task record and return the row id."""
         with self._lock:
             cur = self._conn.execute(
-                """INSERT INTO task_history (task_id, prompt, minister, result, confidence, status)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (task_id, prompt, minister, result, confidence, status),
+                """INSERT INTO task_history
+                   (task_id, prompt, minister, result, confidence, status, capability)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (task_id, prompt, minister, result, confidence, status, capability),
             )
             self._conn.commit()
             return cur.lastrowid
