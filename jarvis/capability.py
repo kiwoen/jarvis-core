@@ -29,7 +29,24 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from jarvis.prompt_template import PromptTemplateManager
+
 logger = logging.getLogger("jarvis.capability")
+
+# Module-level template manager (initialized by Emperor / app startup)
+_template_manager: Optional[PromptTemplateManager] = None
+
+
+def set_template_manager(mgr: PromptTemplateManager) -> None:
+    """Set the module-level PromptTemplateManager for use by all capabilities."""
+    global _template_manager
+    _template_manager = mgr
+    logger.info("[Capability] PromptTemplateManager set")
+
+
+def get_template_manager() -> Optional[PromptTemplateManager]:
+    """Get the module-level PromptTemplateManager."""
+    return _template_manager
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -66,10 +83,29 @@ class CapabilityRegistry:
     - lookup by domain
     - keyword-based best-match
     - execute with error handling
+    - adaptive prompt building via PromptTemplateManager
     """
 
-    def __init__(self) -> None:
+    def __init__(self, template_manager: Optional[PromptTemplateManager] = None) -> None:
         self._capabilities: dict[str, Capability] = {}
+        self._template_manager: Optional[PromptTemplateManager] = template_manager
+
+    @property
+    def template_manager(self) -> Optional[PromptTemplateManager]:
+        return self._template_manager
+
+    def set_template_manager(self, mgr: PromptTemplateManager) -> None:
+        """Inject a PromptTemplateManager for adaptive prompt building."""
+        self._template_manager = mgr
+        logger.info("[CapRegistry] PromptTemplateManager injected")
+
+    def build_template_prompt(self, capability: str, user_query: str, context: Optional[dict] = None) -> Optional[str]:
+        """Build an LLM prompt using the adaptive template for a capability."""
+        if self._template_manager is None:
+            if _template_manager is not None:
+                return _template_manager.build_prompt(capability, user_query, context)
+            return None
+        return self._template_manager.build_prompt(capability, user_query, context)
 
     # ── Registration ───────────────────────────────────────────────
 

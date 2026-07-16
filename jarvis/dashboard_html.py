@@ -885,6 +885,33 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div><!-- .panel-body -->
 </div>
 
+<!-- Prompt Templates 面板 -->
+<div class="panel" id="panel-templates" style="min-width:0;">
+  <div class="panel-header">
+    <h2>Prompt Templates</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-templates')">-</button>
+  </div>
+  <div class="panel-body">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <button onclick="refreshTemplates()" class="btn btn-sm" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;">Refresh</button>
+      <span id="templates-status" style="font-size:11px;color:var(--text-muted);">Auto-refresh: 30s</span>
+    </div>
+    <table class="ministers-table" style="width:100%;">
+      <thead>
+        <tr>
+          <th>Capability</th><th>Version</th><th>Score</th><th>Frozen</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="templates-tbody"></tbody>
+    </table>
+    <!-- Template detail expansion -->
+    <div id="template-detail" style="display:none;margin-top:12px;padding:12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;">
+      <div id="template-detail-content"></div>
+      <button onclick="closeTemplateDetail()" style="margin-top:8px;background:var(--border-color);color:var(--text-secondary);border:none;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:11px;">Close</button>
+    </div>
+  </div><!-- .panel-body -->
+</div>
+
 <!-- Model Cost 模型成本面板 -->
 <div class="panel" id="panel-model-cost">
   <div class="panel-header">
@@ -2512,6 +2539,109 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     var i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
+
+  // Prompt Templates panel
+  var templatesData = {};
+  var templatesTimer = null;
+
+  function refreshTemplates() {
+    apiGet('/api/dashboard/templates').then(function(data) {
+      templatesData = data || {};
+      renderTemplates();
+    }).catch(function() {
+      document.getElementById('templates-tbody').innerHTML =
+        '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;">Failed to load</td></tr>';
+    });
+  }
+
+  function renderTemplates() {
+    var tbody = document.getElementById('templates-tbody');
+    if (!templatesData || Object.keys(templatesData).length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;">No templates found</td></tr>';
+      return;
+    }
+    var html = '';
+    Object.keys(templatesData).sort().forEach(function(cap) {
+      var t = templatesData[cap] || {};
+      var score = t.performance_score != null ? t.performance_score : 0;
+      var scoreColor = score > 0.8 ? 'var(--success)' : (score > 0.6 ? 'var(--warning)' : 'var(--danger)');
+      var frozen = t.frozen ? 'Yes' : 'No';
+      var frozenColor = t.frozen ? 'var(--warning)' : 'var(--text-dim)';
+      html += '<tr style="cursor:pointer;" onclick="toggleTemplateDetail(\'' + cap + '\')">';
+      html += '<td><strong>' + cap + '</strong></td>';
+      html += '<td>v' + (t.version || 1) + '</td>';
+      html += '<td style="color:' + scoreColor + ';font-weight:bold;">' + score.toFixed(2) + '</td>';
+      html += '<td style="color:' + frozenColor + ';">' + frozen + '</td>';
+      html += '<td>';
+      html += '<button onclick="event.stopPropagation();optimizeTemplate(\'' + cap + '\')" style="background:var(--accent);color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:10px;cursor:pointer;margin-right:2px;">Optimize</button>';
+      html += '<button onclick="event.stopPropagation();rollbackTemplate(\'' + cap + '\')" style="background:var(--border-color);color:var(--text-secondary);border:none;border-radius:3px;padding:2px 8px;font-size:10px;cursor:pointer;">Rollback</button>';
+      html += '</td></tr>';
+    });
+    tbody.innerHTML = html;
+    document.getElementById('templates-status').textContent = 'Auto-refresh: 30s';
+  }
+
+  function toggleTemplateDetail(cap) {
+    var t = templatesData[cap];
+    if (!t) return;
+    var detail = document.getElementById('template-detail');
+    var content = document.getElementById('template-detail-content');
+    var html = '<strong>' + cap + '</strong> v' + (t.version || 1) +
+               ' | Score: ' + ((t.performance_score||0).toFixed(2)) +
+               ' | Frozen: ' + (t.frozen ? 'Yes' : 'No') + '<br><br>';
+    html += '<div style="color:var(--text-dim);text-transform:uppercase;font-size:10px;margin-bottom:4px;">System Prompt:</div>';
+    html += '<div style="white-space:pre-wrap;background:var(--bg-primary);padding:8px;border-radius:4px;max-height:120px;overflow-y:auto;">' +
+            (t.system_prompt || '(none)') + '</div>';
+    var examples = t.examples || [];
+    if (examples.length > 0) {
+      html += '<div style="color:var(--text-dim);text-transform:uppercase;font-size:10px;margin:8px 0 4px;">Examples (' + examples.length + '):</div>';
+      examples.forEach(function(ex, i) {
+        html += '<div style="background:var(--bg-primary);padding:6px;border-radius:4px;margin-bottom:4px;font-size:11px;">';
+        html += '<span style="color:var(--accent);">#' + (i+1) + '</span> ';
+        html += '<span style="color:var(--text-dim);">Q:</span> ' + (ex.input||'') + ' ';
+        html += '<span style="color:var(--text-dim);">A:</span> ' + (ex.output||'') + '</div>';
+      });
+    }
+    content.innerHTML = html;
+    detail.style.display = 'block';
+  }
+
+  function closeTemplateDetail() {
+    document.getElementById('template-detail').style.display = 'none';
+  }
+
+  function optimizeTemplate(cap) {
+    var statusEl = document.getElementById('templates-status');
+    statusEl.textContent = 'Optimizing ' + cap + '...';
+    apiPost('/api/dashboard/templates/optimize', {capability: cap}).then(function(data) {
+      templatesData[cap] = data;
+      renderTemplates();
+      statusEl.textContent = 'Optimized ' + cap + ' OK';
+    }).catch(function(err) {
+      statusEl.textContent = 'Optimize failed: ' + (err.message || err);
+    });
+  }
+
+  function rollbackTemplate(cap) {
+    var ver = prompt('Rollback ' + cap + ' to version (current: v' +
+      ((templatesData[cap]||{}).version||1) + '):', '1');
+    if (!ver) return;
+    var v = parseInt(ver, 10);
+    if (isNaN(v) || v < 1) { alert('Invalid version'); return; }
+    var statusEl = document.getElementById('templates-status');
+    statusEl.textContent = 'Rolling back ' + cap + ' to v' + v + '...';
+    apiPost('/api/dashboard/templates/rollback', {capability: cap, version: v}).then(function(data) {
+      templatesData[cap] = data;
+      renderTemplates();
+      statusEl.textContent = 'Rollback ' + cap + ' to v' + v + ' OK';
+    }).catch(function(err) {
+      statusEl.textContent = 'Rollback failed: ' + (err.message || err);
+    });
+  }
+
+  if (templatesTimer) clearInterval(templatesTimer);
+  refreshTemplates();
+  templatesTimer = setInterval(refreshTemplates, 30000);
 
   // Auto-refresh Evals, Audit, and Model Costs
   refreshEvals();

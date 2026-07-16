@@ -201,6 +201,15 @@ class Emperor:
         from jarvis.core.router import ModelRouter
         self._model_router: ModelRouter = ModelRouter()
 
+        # Adaptive prompt template manager
+        from jarvis.prompt_template import PromptTemplateManager
+        template_data_dir = self.config.data_dir if self.config.data_dir else str(Path.cwd())
+        self._template_manager: PromptTemplateManager = PromptTemplateManager(data_dir=template_data_dir)
+
+        # Inject template_manager into capability module
+        from jarvis.capability import set_template_manager
+        set_template_manager(self._template_manager)
+
         self._dispatch(LifecycleEvent.ON_INIT, emperor=self)
 
         # Load persisted state if data_dir set
@@ -438,7 +447,7 @@ class Emperor:
 
         from jarvis.court_api import create_app, configure_app
 
-        app = create_app(court=self._court, eval_runner=self._eval_runner, audit_logger=self._audit_logger)
+        app = create_app(court=self._court, eval_runner=self._eval_runner, audit_logger=self._audit_logger, template_manager=self._template_manager)
         configure_app(self.app_config)
         app.extra["host"] = host
         app.extra["port"] = port

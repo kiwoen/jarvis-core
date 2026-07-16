@@ -109,6 +109,20 @@ class ThemeRequest(BaseModel):
     theme: str = "dark"
 
 
+class TemplateOptimizeRequest(BaseModel):
+    capability: str = Field(..., description="Capability name to optimize")
+
+
+class TemplateFeedbackRequest(BaseModel):
+    capability: str = Field(..., description="Capability name")
+    score: float = Field(..., ge=0.0, le=1.0, description="Feedback score 0.0~1.0")
+
+
+class TemplateRollbackRequest(BaseModel):
+    capability: str = Field(..., description="Capability name")
+    version: int = Field(..., ge=1, description="Target version to rollback to")
+
+
 # ══════════════════════════════════════════════════════════════════
 # Module-level scheduler state (shared with Emperor.serve)
 # ══════════════════════════════════════════════════════════════════
@@ -144,6 +158,7 @@ def create_app(
     court: Court | None = None,
     eval_runner: Optional[Any] = None,
     audit_logger: Optional[Any] = None,
+    template_manager: Optional[Any] = None,
 ) -> FastAPI:
     """Create a FastAPI app wired to a Court instance.
 
@@ -152,6 +167,7 @@ def create_app(
         court: Optional pre-built Court instance to inject.
         eval_runner: Optional EvalRunner instance for /api/dashboard/evals endpoints.
         audit_logger: Optional AuditLogger instance for /api/dashboard/audit endpoints.
+        template_manager: Optional PromptTemplateManager for adaptive prompt templates.
     """
     app = FastAPI(title="Emperor Court API", version="0.1.0")
     if court is None:
@@ -160,9 +176,10 @@ def create_app(
     if config is not None and config.genome_path:
         court._sm.genome_path = config.genome_path
 
-    # Inject eval_runner / audit_logger into app.extra for dashboard endpoints
+    # Inject eval_runner / audit_logger / template_manager into app.extra for dashboard endpoints
     app.extra["eval_runner"] = eval_runner
     app.extra["audit_logger"] = audit_logger
+    app.extra["template_manager"] = template_manager
 
     # ── Endpoints ──────────────────────────────────────────────────
 
@@ -1014,6 +1031,71 @@ def create_app(
                 "entries": [_serialize_audit_entry(e) for e in entries],
                 "total": len(entries),
             }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Prompt Template Dashboard endpoints ────────────────────────
+
+    def _get_template_manager():
+        """Resolve template_manager: prefer app.extra, fallback to module-level."""
+        mgr = app.extra.get("template_manager")
+        if mgr is None:
+            from jarvis.capability import get_template_manager
+            mgr = get_template_manager()
+        if mgr is None:
+            raise HTTPException(status_code=503, detail="PromptTemplateManager not available")
+        return mgr
+
+    @app.get("/api/dashboard/templates")
+    def list_templates():
+        """返回所有 capability 模板及其版本和评分。"""
+        mgr = _get_template_manager()
+        return mgr.list_templates()
+
+    @app.post("/api/dashboard/templates/optimize")
+    def optimize_template(body: TemplateOptimizeRequest):
+        """对指定 capability 执行自动优化。"""
+        mgr = _get_template_manager()
+        try:
+            result = mgr.auto_optimize(body.capability)
+            return {
+                "capability": body.capability,
+                "version": result.get("version"),
+                "performance_score": result.get("performance_score"),
+                "system_prompt": result.get("system_prompt"),
+                "frozen": result.get("frozen", False),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/dashboard/templates/feedback")
+    def record_feedback(body: TemplateFeedbackRequest):
+        """记录用户反馈分数并更新 performance_score。"""
+        mgr = _get_template_manager()
+        try:
+            result = mgr.record_feedback(body.capability, body.score)
+            return {
+                "capability": body.capability,
+                "performance_score": result.get("performance_score"),
+                "version": result.get("version"),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/dashboard/templates/rollback")
+    def rollback_template(body: TemplateRollbackRequest):
+        """回滚模板到指定历史版本。"""
+        mgr = _get_template_manager()
+        try:
+            result = mgr.rollback(body.capability, body.version)
+            return {
+                "capability": body.capability,
+                "version": result.get("version"),
+                "performance_score": result.get("performance_score"),
+                "system_prompt": result.get("system_prompt"),
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
