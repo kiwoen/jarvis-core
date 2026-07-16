@@ -558,6 +558,64 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       grid-column: 1 / -1;
     }
   }
+
+  /* ── Plugin Marketplace ── */
+  .plugin-tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border-color); }
+  .plugin-tab-btn {
+    background: none; border: none; color: var(--text-secondary); cursor: pointer;
+    padding: 8px 20px; font-family: inherit; font-size: 0.82rem; font-weight: 600;
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  .plugin-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .plugin-card {
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 10px; padding: 16px; transition: border-color 0.2s, box-shadow 0.2s;
+    position: relative; display: flex; flex-direction: column; gap: 8px;
+  }
+  .plugin-card:hover { border-color: var(--accent); box-shadow: 0 0 12px rgba(108,140,255,0.08); }
+  .plugin-card.installed { border-color: var(--success); }
+  .plugin-card.installed::after {
+    content: '✓'; position: absolute; top: 10px; right: 12px;
+    color: var(--success); font-weight: bold; font-size: 16px;
+  }
+  .plugin-card-name { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+  .plugin-card-version { font-size: 0.7rem; color: var(--text-dim); margin-left: 6px; }
+  .plugin-card-desc { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4; flex: 1; }
+  .plugin-card-meta { font-size: 0.7rem; color: var(--text-muted); display: flex; gap: 12px; }
+  .plugin-card-meta span { display: flex; align-items: center; gap: 3px; }
+  .plugin-card-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+  .plugin-cap-tag {
+    font-size: 0.63rem; padding: 1px 8px; border-radius: 10px;
+    background: rgba(108,140,255,0.1); color: var(--accent);
+    border: 1px solid rgba(108,140,255,0.2);
+  }
+  .plugin-card-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .plugin-btn {
+    padding: 6px 14px; border-radius: 6px; font-family: inherit; font-size: 0.75rem;
+    cursor: pointer; border: none; font-weight: 600; transition: filter 0.2s;
+  }
+  .plugin-btn.install { background: var(--accent); color: #fff; }
+  .plugin-btn.uninstall { background: var(--danger); color: #fff; }
+  .plugin-btn.toggle { background: var(--bg-card-hover); color: var(--text-primary); border: 1px solid var(--border-color); }
+  .plugin-btn.toggle.enabled { background: var(--success); border-color: var(--success); }
+  .plugin-btn.config { background: none; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 6px 10px; font-size: 1rem; }
+  .plugin-btn:hover { filter: brightness(1.15); }
+
+  /* Plugin config modal */
+  .plugin-config-modal { display: none; }
+  .plugin-config-modal.show { display: flex; }
+  .plugin-config-content {
+    max-width: 500px; max-height: 80vh; overflow-y: auto;
+  }
+  .plugin-config-content textarea {
+    width: 100%; min-height: 140px; background: var(--input-bg); color: var(--text-primary);
+    border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;
+    font-family: 'Consolas', 'Courier New', monospace; font-size: 0.75rem;
+    resize: vertical; box-sizing: border-box;
+  }
+  .plugin-config-content .config-label { display: block; color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 4px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -742,6 +800,38 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <span class="save-success" id="save-success">✓ 配置已保存</span>
   </div>
   </div><!-- .panel-body -->
+</div>
+
+<!-- Plugin Marketplace Panel -->
+<div class="panel-full" id="panel-plugins">
+  <div class="panel-header">
+    <h2>Plugin Marketplace</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-plugins')">▼</button>
+    <span class="panel-actions" style="display:flex;gap:8px;">
+      <span id="plugin-stats" style="color:var(--text-secondary);font-size:13px;"></span>
+    </span>
+  </div>
+  <div class="panel-body">
+    <div class="plugin-tabs">
+      <button class="plugin-tab-btn active" id="tab-available" onclick="switchPluginTab('available')">Available</button>
+      <button class="plugin-tab-btn" id="tab-installed" onclick="switchPluginTab('installed')">Installed</button>
+    </div>
+    <div class="plugin-grid" id="plugin-grid"></div>
+  </div>
+</div>
+
+<!-- Plugin Config Modal -->
+<div class="modal-overlay plugin-config-modal" id="plugin-config-modal">
+  <div class="modal-box plugin-config-content">
+    <h3 id="plugin-config-title">Plugin Config</h3>
+    <label class="config-label">Configuration (JSON)</label>
+    <textarea id="plugin-config-textarea"></textarea>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closePluginConfig()">取消</button>
+      <button class="btn-save" onclick="savePluginConfig()">保存</button>
+    </div>
+    <div class="modal-error" id="plugin-config-error"></div>
+  </div>
 </div>
 
 <!-- Time-series charts row -->
@@ -2649,6 +2739,164 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   refreshModelCosts();
   setInterval(refreshAudit, 60000);
   setInterval(refreshModelCosts, 60000);
+
+  // ═══ Plugin Marketplace ═══════════════════════════════════════
+
+  var _pluginTab = 'available';
+  var _pluginData = null;
+  var _pluginConfigTarget = null;
+
+  function switchPluginTab(tab) {
+    _pluginTab = tab;
+    document.querySelectorAll('.plugin-tab-btn').forEach(function(btn) {
+      btn.classList.remove('active');
+    });
+    document.getElementById('tab-' + tab).classList.add('active');
+    renderPlugins();
+  }
+
+  async function fetchPlugins() {
+    try {
+      var res = await fetch(API + '/api/dashboard/plugins');
+      _pluginData = await res.json();
+      renderPlugins();
+    } catch(e) {
+      console.error('Plugin fetch failed:', e);
+    }
+  }
+
+  function renderPlugins() {
+    if (!_pluginData) return;
+    var grid = document.getElementById('plugin-grid');
+    var stats = document.getElementById('plugin-stats');
+    if (stats) {
+      stats.textContent = _pluginData.installed + ' / ' + _pluginData.total + ' installed (' + _pluginData.enabled + ' enabled)';
+    }
+
+    var list = _pluginTab === 'available' ? (_pluginData.available || []) : (_pluginData.installed_list || []);
+    if (!list.length) {
+      grid.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:24px;grid-column:1/-1;">' +
+        (_pluginTab === 'installed' ? 'No plugins installed yet.' : 'No plugins available.') + '</div>';
+      return;
+    }
+
+    grid.innerHTML = list.map(function(p) {
+      var capsHtml = (p.capabilities_used || []).map(function(c) {
+        return '<span class="plugin-cap-tag">' + c + '</span>';
+      }).join('');
+
+      var installed = p.installed || (_pluginData.installed_list || []).some(function(i) { return i.id === p.id; });
+      var enabled = p.enabled === true;
+      var cardClass = installed ? ' installed' : '';
+
+      var actionsHtml = '';
+      if (!installed) {
+        actionsHtml = '<button class="plugin-btn install" onclick="installPlugin(\'' + p.id + '\')">Install</button>';
+      } else {
+        actionsHtml =
+          '<button class="plugin-btn toggle' + (enabled ? ' enabled' : '') + '" onclick="togglePlugin(\'' + p.id + '\', ' + !enabled + ')">' +
+            (enabled ? 'Enabled' : 'Disabled') +
+          '</button>' +
+          '<button class="plugin-btn config" onclick="openPluginConfig(\'' + p.id + '\')" title="配置">&#9881;</button>' +
+          '<button class="plugin-btn uninstall" onclick="uninstallPlugin(\'' + p.id + '\')">Uninstall</button>';
+      }
+
+      return '<div class="plugin-card' + cardClass + '">' +
+        '<div><span class="plugin-card-name">' + p.name + '</span><span class="plugin-card-version">v' + (p.version || '1.0.0') + '</span></div>' +
+        '<div class="plugin-card-desc">' + (p.description || '') + '</div>' +
+        '<div class="plugin-card-caps">' + capsHtml + '</div>' +
+        '<div class="plugin-card-meta">' +
+          '<span>by ' + (p.author || 'Unknown') + '</span>' +
+        '</div>' +
+        '<div class="plugin-card-actions">' + actionsHtml + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  async function installPlugin(pluginId) {
+    try {
+      await fetch(API + '/api/dashboard/plugins/install', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plugin_id: pluginId})
+      });
+      await fetchPlugins();
+    } catch(e) {
+      console.error('Install failed:', e);
+    }
+  }
+
+  async function uninstallPlugin(pluginId) {
+    try {
+      await fetch(API + '/api/dashboard/plugins/uninstall', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plugin_id: pluginId})
+      });
+      await fetchPlugins();
+    } catch(e) {
+      console.error('Uninstall failed:', e);
+    }
+  }
+
+  async function togglePlugin(pluginId, enabled) {
+    try {
+      await fetch(API + '/api/dashboard/plugins/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plugin_id: pluginId, enabled: enabled})
+      });
+      await fetchPlugins();
+    } catch(e) {
+      console.error('Toggle failed:', e);
+    }
+  }
+
+  function openPluginConfig(pluginId) {
+    _pluginConfigTarget = pluginId;
+    var plugin = (_pluginData.available || []).concat(_pluginData.installed_list || [])
+      .find(function(p) { return p.id === pluginId; });
+    if (!plugin) return;
+
+    document.getElementById('plugin-config-title').textContent = '配置 - ' + plugin.name;
+    document.getElementById('plugin-config-textarea').value = JSON.stringify(plugin.config || {}, null, 2);
+    document.getElementById('plugin-config-error').style.display = 'none';
+    document.getElementById('plugin-config-modal').classList.add('show');
+  }
+
+  function closePluginConfig() {
+    document.getElementById('plugin-config-modal').classList.remove('show');
+    _pluginConfigTarget = null;
+  }
+
+  async function savePluginConfig() {
+    var errEl = document.getElementById('plugin-config-error');
+    var textarea = document.getElementById('plugin-config-textarea');
+    var config;
+    try {
+      config = JSON.parse(textarea.value);
+    } catch(e) {
+      errEl.textContent = 'Invalid JSON: ' + e.message;
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await fetch(API + '/api/dashboard/plugins/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plugin_id: _pluginConfigTarget, config: config})
+      });
+      closePluginConfig();
+      await fetchPlugins();
+    } catch(e) {
+      errEl.textContent = 'Save failed: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  // Load plugins on page load
+  fetchPlugins();
+  setInterval(fetchPlugins, 30000);
 </script>
 </body>
 </html>"""

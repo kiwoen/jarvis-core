@@ -179,6 +179,10 @@ class Emperor:
         from jarvis.plugin import LifecycleEvent, PluginManager
         self._plugin_manager: Any = PluginManager()
 
+        # Plugin marketplace
+        from jarvis.plugin_marketplace import PluginMarketplace
+        self._plugin_marketplace = PluginMarketplace(data_dir=self.config.data_dir)
+
         # Eagerly register MetricsPlugin so every event from the very
         # first dispatch is captured.
         from jarvis.plugins import MetricsPlugin
@@ -255,6 +259,11 @@ class Emperor:
     def eval_runner(self):
         """Direct access to the EvalRunner."""
         return self._eval_runner
+
+    @property
+    def plugin_marketplace(self):
+        """Direct access to the PluginMarketplace."""
+        return self._plugin_marketplace
 
     def _dispatch(self, event: Any, **kwargs: Any) -> Any:
         """Dispatch a lifecycle event to all registered plugins."""
@@ -474,6 +483,7 @@ class Emperor:
         # Touch metrics so the plugin is registered before serving
         _ = self.metrics
         app.extra["metrics_plugin"] = self._metrics_plugin
+        app.extra["plugin_marketplace"] = self._plugin_marketplace
 
         self._app = app
 

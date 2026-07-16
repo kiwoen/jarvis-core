@@ -28,7 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -1268,6 +1268,71 @@ def create_app(
         t.start()
 
     _start_heartbeat()
+
+    # ══════════════════════════════════════════════════════════════
+    # Plugin Marketplace API
+    # ══════════════════════════════════════════════════════════════
+
+    class PluginInstallRequest(BaseModel):
+        plugin_id: str
+
+    class PluginToggleRequest(BaseModel):
+        plugin_id: str
+        enabled: bool
+
+    class PluginConfigRequest(BaseModel):
+        plugin_id: str
+        config: dict = Field(default_factory=dict)
+
+    @app.get("/api/dashboard/plugins")
+    def get_plugins(request: Request):
+        mp = request.app.extra.get("plugin_marketplace")
+        if mp is None:
+            raise HTTPException(status_code=503, detail="Plugin marketplace not available")
+        return mp.report()
+
+    @app.post("/api/dashboard/plugins/install")
+    def install_plugin(payload: PluginInstallRequest, request: Request):
+        mp = request.app.extra.get("plugin_marketplace")
+        if mp is None:
+            raise HTTPException(status_code=503, detail="Plugin marketplace not available")
+        try:
+            return mp.install(payload.plugin_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/dashboard/plugins/uninstall")
+    def uninstall_plugin(payload: PluginInstallRequest, request: Request):
+        mp = request.app.extra.get("plugin_marketplace")
+        if mp is None:
+            raise HTTPException(status_code=503, detail="Plugin marketplace not available")
+        try:
+            return mp.uninstall(payload.plugin_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/dashboard/plugins/toggle")
+    def toggle_plugin(payload: PluginToggleRequest, request: Request):
+        mp = request.app.extra.get("plugin_marketplace")
+        if mp is None:
+            raise HTTPException(status_code=503, detail="Plugin marketplace not available")
+        try:
+            if payload.enabled:
+                return mp.enable(payload.plugin_id)
+            else:
+                return mp.disable(payload.plugin_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/dashboard/plugins/config")
+    def set_plugin_config(payload: PluginConfigRequest, request: Request):
+        mp = request.app.extra.get("plugin_marketplace")
+        if mp is None:
+            raise HTTPException(status_code=503, detail="Plugin marketplace not available")
+        try:
+            return mp.set_config(payload.plugin_id, payload.config)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     return app
 
