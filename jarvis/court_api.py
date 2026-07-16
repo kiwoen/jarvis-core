@@ -1258,6 +1258,38 @@ def create_app(
 
         return jsonify(pipeline_scheduler.get_jobs())
 
+    # ── Pipeline Monitor API ──────────────────────────────────────
+
+    @app.get("/api/pipelines/monitor/summary")
+    def pipeline_monitor_summary():
+        """流水线监控摘要：总览、活跃、成功率、时间线"""
+        from jarvis.pipeline_monitor import pipeline_monitor
+        return pipeline_monitor.get_summary()
+
+    @app.get("/api/pipelines/monitor/dag/<pipeline_id>")
+    def pipeline_monitor_dag(pipeline_id: str):
+        """单条流水线的 DAG 详情（节点 + 边）"""
+        from jarvis.pipeline_monitor import pipeline_monitor
+        dag = pipeline_monitor.get_dag(pipeline_id)
+        if dag is None:
+            raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
+        return dag
+
+    @app.get("/api/pipelines/monitor/timeline/<pipeline_id>")
+    def pipeline_monitor_timeline(pipeline_id: str):
+        """单条流水线的执行时间线"""
+        from jarvis.pipeline_monitor import pipeline_monitor
+        timeline = pipeline_monitor.get_timeline(pipeline_id)
+        if timeline is None:
+            raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found")
+        return {"pipeline_id": pipeline_id, "timeline": timeline}
+
+    @app.get("/api/pipelines/monitor/live")
+    def pipeline_monitor_live():
+        """实时流水线状态（轻量轮询）"""
+        from jarvis.pipeline_monitor import pipeline_monitor
+        return pipeline_monitor.get_live()
+
     # ── Background heartbeat thread ───────────────────────────────
 
     import threading

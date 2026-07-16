@@ -559,6 +559,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
   }
 
+  /* ── Pipeline Monitor DAG ── */
+  @keyframes pmon-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+    50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+  }
+  .pmon-pulse {
+    animation: pmon-pulse 1.5s ease-in-out infinite;
+  }
+
   /* ── Plugin Marketplace ── */
   .plugin-tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border-color); }
   .plugin-tab-btn {
@@ -1136,6 +1145,49 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div style="color:var(--text-muted);">加载中...</div>
       </div>
     </div>
+  </div><!-- .panel-body -->
+</div>
+
+<!-- Pipeline Monitor DAG Panel -->
+<div class="panel" id="panel-pipeline-monitor" style="min-width:0;">
+  <div class="panel-header">
+    <h2>Pipeline DAG 监控</h2>
+    <span style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+      <span id="pmon-live-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--bg-secondary);color:var(--text-muted);">实时</span>
+      <button class="panel-collapse-btn" onclick="togglePanel('panel-pipeline-monitor')">&#9660;</button>
+    </span>
+  </div>
+  <div class="panel-body">
+    <!-- Stats row -->
+    <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:80px;text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+        <div style="font-size:20px;font-weight:700;color:var(--accent);" id="pmon-total">0</div>
+        <div style="font-size:10px;color:var(--text-secondary);">总计</div>
+      </div>
+      <div style="flex:1;min-width:80px;text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+        <div style="font-size:20px;font-weight:700;color:var(--warning);" id="pmon-active">0</div>
+        <div style="font-size:10px;color:var(--text-secondary);">活跃</div>
+      </div>
+      <div style="flex:1;min-width:80px;text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+        <div style="font-size:20px;font-weight:700;color:var(--success);" id="pmon-done">0</div>
+        <div style="font-size:10px;color:var(--text-secondary);">完成</div>
+      </div>
+      <div style="flex:1;min-width:80px;text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+        <div style="font-size:20px;font-weight:700;color:var(--danger);" id="pmon-failed">0</div>
+        <div style="font-size:10px;color:var(--text-secondary);">失败</div>
+      </div>
+    </div>
+
+    <!-- DAG Canvas -->
+    <div style="margin-bottom:12px;">
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">执行拓扑图</div>
+      <div id="pmon-dag-canvas" style="background:var(--bg-secondary);border-radius:8px;min-height:200px;max-height:400px;overflow-y:auto;padding:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;justify-content:center;">
+        <div style="color:var(--text-muted);font-size:12px;text-align:center;width:100%;">暂无流水线数据，执行任务后自动生成</div>
+      </div>
+    </div>
+
+    <!-- Pipeline list with expandable DAG -->
+    <div id="pmon-list" style="font-size:12px;max-height:400px;overflow-y:auto;"></div>
   </div><!-- .panel-body -->
 </div>
 
@@ -2292,6 +2344,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   setInterval(refreshPipelineHistory, 30000);
   refreshPipelineSchedules();
   setInterval(refreshPipelineSchedules, 60000);
+  refreshPipelineMonitor();
+  setInterval(refreshPipelineMonitor, 10000);
 
   // ═══ Pipeline functions ════════════════════════════════════
 
@@ -2438,6 +2492,172 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     } catch (e) {
       alert('请求失败: ' + e.message);
+    }
+  }
+
+  // ═══ Pipeline Monitor DAG functions ════════════════════════
+
+  async function refreshPipelineMonitor() {
+    try {
+      var resp = await fetch(API + '/api/pipelines/monitor/summary');
+      var data = await resp.json();
+
+      // Update stats
+      document.getElementById('pmon-total').textContent = data.total_pipelines || 0;
+      document.getElementById('pmon-active').textContent = data.active_pipelines || 0;
+      document.getElementById('pmon-done').textContent = data.completed_pipelines || 0;
+      document.getElementById('pmon-failed').textContent = data.failed_pipelines || 0;
+
+      // Update live badge
+      var badge = document.getElementById('pmon-live-badge');
+      if (data.active_pipelines > 0) {
+        badge.style.background = 'var(--success)';
+        badge.style.color = '#fff';
+        badge.textContent = '活跃';
+      } else {
+        badge.style.background = 'var(--bg-secondary)';
+        badge.style.color = 'var(--text-muted)';
+        badge.textContent = '空闲';
+      }
+
+      // Render DAG canvas
+      renderPipelineDAG(data.pipelines || []);
+
+      // Render pipeline list
+      renderPipelineList(data.pipelines || []);
+    } catch (e) {
+      console.error('Pipeline monitor refresh failed:', e);
+    }
+  }
+
+  function renderPipelineDAG(pipelines) {
+    var canvas = document.getElementById('pmon-dag-canvas');
+    if (!canvas) return;
+
+    if (pipelines.length === 0) {
+      canvas.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;width:100%;">暂无流水线数据，执行任务后自动生成</div>';
+      return;
+    }
+
+    // Show most recent pipeline's DAG
+    var latest = pipelines[pipelines.length - 1];
+    var stages = latest.nodes || [];
+
+    var dotsHtml = stages.map(function(n, i) {
+      var color;
+      switch(n.status) {
+        case 'running': color = 'var(--warning)'; break;
+        case 'completed': color = 'var(--success)'; break;
+        case 'failed': color = 'var(--danger)'; break;
+        case 'skipped': color = 'var(--text-muted)'; break;
+        default: color = 'var(--text-secondary)';
+      }
+      var pulse = n.status === 'running' ? 'pmon-pulse' : '';
+      var durStr = n.duration_ms ? ' (' + (n.duration_ms / 1000).toFixed(1) + 's)' : '';
+      return '<div style="display:flex;align-items:center;">'
+        + (i > 0 ? '<span style="width:24px;height:2px;background:var(--border-color);margin:0 4px;"></span>' : '')
+        + '<div class="' + pulse + '" style="background:' + color + ';border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0;" title="' + n.stage_name + durStr + '">' + (i + 1) + '</div>'
+        + '</div>';
+    }).join('');
+
+    var statusColor = latest.status === 'completed' ? 'var(--success)' :
+                     latest.status === 'running' ? 'var(--warning)' : 'var(--danger)';
+
+    canvas.innerHTML = '<div style="width:100%;text-align:center;">'
+      + '<div style="font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:8px;">'
+      + latest.pipeline_name
+      + ' <span style="color:' + statusColor + ';font-size:10px;">[' + latest.status + ']</span>'
+      + ' <span style="color:var(--text-muted);font-size:10px;">' + (latest.total_duration_ms / 1000).toFixed(1) + 's</span>'
+      + '</div>'
+      + '<div style="display:flex;align-items:center;justify-content:center;flex-wrap:wrap;">' + dotsHtml + '</div>'
+      + (latest.success_rate !== undefined ? '<div style="font-size:10px;color:var(--text-secondary);margin-top:6px;">成功率: ' + (latest.success_rate * 100).toFixed(0) + '%</div>' : '')
+      + '</div>';
+  }
+
+  function renderPipelineList(pipelines) {
+    var el = document.getElementById('pmon-list');
+    if (!el) return;
+
+    if (pipelines.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">暂无流水线记录</div>';
+      return;
+    }
+
+    el.innerHTML = pipelines.slice().reverse().map(function(p) {
+      var statusColor = p.status === 'completed' ? 'var(--success)' :
+                       p.status === 'running' ? 'var(--warning)' : 'var(--danger)';
+      var stageDots = (p.nodes || []).map(function(n) {
+        var c = n.status === 'completed' ? 'var(--success)' :
+                n.status === 'running' ? 'var(--warning)' :
+                n.status === 'failed' ? 'var(--danger)' : 'var(--text-secondary)';
+        return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-right:2px;"></span>';
+      }).join('');
+
+      return '<div style="padding:6px 0;border-bottom:1px solid var(--border-color);cursor:pointer;" onclick="expandPipelineDAG(\'' + p.pipeline_id + '\')">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;">'
+        + '<span style="font-weight:500;">' + p.pipeline_name + '</span>'
+        + '<span style="color:' + statusColor + ';font-size:10px;">[' + p.status + ']</span>'
+        + '</div>'
+        + '<div style="display:flex;justify-content:space-between;margin-top:4px;">'
+        + '<span>' + stageDots + '</span>'
+        + '<span style="color:var(--text-muted);font-size:10px;">' + (p.total_duration_ms / 1000).toFixed(1) + 's | ' + (p.success_rate * 100).toFixed(0) + '%</span>'
+        + '</div>'
+        + '<div id="pmon-expand-' + p.pipeline_id + '" style="display:none;margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;font-size:11px;"></div>'
+        + '</div>';
+    }).join('');
+  }
+
+  async function expandPipelineDAG(pid) {
+    var expandEl = document.getElementById('pmon-expand-' + pid);
+    if (!expandEl) return;
+
+    if (expandEl.style.display === 'block') {
+      expandEl.style.display = 'none';
+      return;
+    }
+
+    try {
+      var resp = await fetch(API + '/api/pipelines/monitor/dag/' + pid);
+      var dag = await resp.json();
+
+      var nodesHtml = (dag.nodes || []).map(function(n, i) {
+        var color = n.status === 'completed' ? 'var(--success)' :
+                    n.status === 'running' ? 'var(--warning)' :
+                    n.status === 'failed' ? 'var(--danger)' : 'var(--text-secondary)';
+        return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">'
+          + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';"></span>'
+          + '<span style="font-weight:500;">' + n.stage_name + '</span>'
+          + '<span style="color:var(--text-muted);font-size:10px;">[' + n.status + ']</span>'
+          + (n.duration_ms ? '<span style="color:var(--text-muted);font-size:10px;">' + (n.duration_ms / 1000).toFixed(2) + 's</span>' : '')
+          + (n.error ? '<span style="color:var(--danger);font-size:10px;">' + n.error + '</span>' : '')
+          + '</div>';
+      }).join('');
+
+      // Show timeline
+      var tlHtml = '';
+      if (dag.timeline && dag.timeline.length > 0) {
+        tlHtml = '<div style="margin-top:6px;border-top:1px solid var(--border-color);padding-top:6px;">'
+          + '<div style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;">时间线</div>'
+          + dag.timeline.slice(-8).map(function(e) {
+            var tColor = e.status === 'completed' ? 'var(--success)' :
+                        e.status === 'failed' ? 'var(--danger)' : 'var(--text-secondary)';
+            return '<div style="font-size:10px;padding:1px 0;color:' + tColor + ';">'
+              + new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'})
+              + '  ' + e.stage_name
+              + (e.duration_ms ? ' (' + (e.duration_ms / 1000).toFixed(2) + 's)' : '')
+              + '</div>';
+          }).join('')
+          + '</div>';
+      }
+
+      expandEl.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap;">'
+        + '<div style="flex:1;min-width:200px;">' + nodesHtml + '</div>'
+        + '<div style="flex:1;min-width:180px;">' + tlHtml + '</div>'
+        + '</div>';
+      expandEl.style.display = 'block';
+    } catch (e) {
+      expandEl.innerHTML = '<div style="color:var(--danger);">加载失败: ' + e.message + '</div>';
+      expandEl.style.display = 'block';
     }
   }
 

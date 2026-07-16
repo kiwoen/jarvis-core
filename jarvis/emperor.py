@@ -175,6 +175,9 @@ class Emperor:
         # Self-healing
         self._healing_engine: Any = None  # HealingEngine (lazy)
 
+        # Pipeline monitoring
+        self._pipeline_monitor: Any = None  # PipelineMonitor (lazy)
+
         # Plugin system
         from jarvis.plugin import LifecycleEvent, PluginManager
         self._plugin_manager: Any = PluginManager()
@@ -884,6 +887,16 @@ class Emperor:
             self._healing_engine = HealingEngine()
             self._register_default_healing_actions()
         return self._healing_engine
+
+    def pipeline_monitor(self):
+        """Lazy-loaded PipelineMonitor for real-time DAG visualization."""
+        if self._pipeline_monitor is None:
+            from jarvis.pipeline_monitor import PipelineMonitor
+            from jarvis.pipeline import pipeline_registry
+            self._pipeline_monitor = PipelineMonitor()
+            self._pipeline_monitor.attach(pipeline_registry)
+            logger.info("[Emperor] Pipeline monitor attached")
+        return self._pipeline_monitor
 
     def _register_default_healing_actions(self) -> None:
         """Register pre‑baked healing actions on first access."""
