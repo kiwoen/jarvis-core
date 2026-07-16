@@ -330,6 +330,138 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     margin-right: 8px; transition: border-color 0.2s;
   }
   .theme-btn:hover { border-color: var(--accent); }
+
+  /* ── Dashboard Grid Layout ── */
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap);
+    margin-bottom: var(--gap);
+  }
+  .panel-full { grid-column: 1 / -1; }
+
+  /* Adaptive .panel for grid children */
+  .panel, .ministers-panel, .scheduler-config-panel {
+    margin-bottom: 0;
+  }
+
+  /* ── Panel header with collapse button ── */
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+  .panel-header h2, .panel-header h3 {
+    margin: 0;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+  .panel-collapse-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    transition: transform 0.25s;
+    line-height: 1;
+  }
+  .panel-collapse-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-card-hover);
+  }
+  .panel-collapsed .panel-body {
+    display: none;
+  }
+  .panel-collapsed .panel-header {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+  .panel-collapsed .panel-collapse-btn {
+    transform: rotate(-90deg);
+  }
+
+  /* ── Responsive layout ── */
+  /* Tablet portrait (≤1024px): two-column */
+  @media (max-width: 1024px) {
+    .dashboard-grid {
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .panel-full {
+      grid-column: 1 / -1;
+    }
+    .stats-row {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .stat-card {
+      flex: 1 1 calc(50% - 8px);
+      min-width: 140px;
+    }
+  }
+
+  /* Mobile (≤768px): single column */
+  @media (max-width: 768px) {
+    .dashboard-grid {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .panel-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .table-wrap table {
+      min-width: 600px;
+    }
+    .minister-actions {
+      flex-wrap: wrap;
+    }
+    .modal-box {
+      width: 95vw;
+      max-width: 95vw;
+      margin: 2vh auto;
+      max-height: 90vh;
+    }
+    .btn, button {
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    .task-form textarea,
+    .task-form select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .grid-stats {
+      grid-template-columns: 1fr;
+    }
+    .grid-charts {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Large screen (≥1400px): three-column */
+  @media (min-width: 1400px) {
+    .dashboard-grid {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+    .panel-full {
+      grid-column: 1 / -1;
+    }
+  }
 </style>
 </head>
 <body>
@@ -343,12 +475,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="dashboard-grid">
+
 <!-- Top stat cards -->
-<div class="grid grid-stats" id="statCards"></div>
+<div class="panel-full grid grid-stats" id="statCards"></div>
 
 <!-- Control Panel -->
-<div class="card" style="background:var(--bg-card-hover);border:1px solid var(--border-color);margin-bottom:var(--gap);">
-  <div class="card-label" style="font-size:0.78rem;text-transform:uppercase;color:var(--text-dim);letter-spacing:1px;margin-bottom:12px;">Control Panel</div>
+<div class="card panel-full" id="panel-controls">
+  <div class="panel-header">
+    <h2>控制面板</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-controls')">▼</button>
+  </div>
+  <div class="panel-body">
   <div style="display:flex;gap:12px;flex-wrap:wrap;">
     <button id="btnEvolve" onclick="triggerEvolve()" style="background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-family:inherit;font-size:0.85rem;cursor:pointer;transition:filter 0.2s;">进化</button>
     <button id="btnHeal" onclick="triggerHeal()" style="background:#e94560;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-family:inherit;font-size:0.85rem;cursor:pointer;transition:filter 0.2s;">自愈检查</button>
@@ -372,12 +510,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="btn-submit" id="task-submit-btn" onclick="submitManualTask()">派遣任务</button>
     </div>
     <div class="task-result" id="task-result"></div>
-  </div>
+  </div><!-- .panel-body -->
 </div>
 
 <!-- Ministers Management Panel -->
-<div class="ministers-panel">
-  <h3>大臣管理 <span class="minister-count" id="ministerCount">0</span></h3>
+<div class="ministers-panel" id="panel-ministers">
+  <div class="panel-header">
+    <h2>大臣管理 <span class="minister-count" id="ministerCount">0</span></h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-ministers')">▼</button>
+  </div>
+  <div class="panel-body">
   <button class="add-btn" onclick="openCreateModal()">新建大臣</button>
   <div style="clear:both;"></div>
   <table class="ministers-table">
@@ -388,11 +530,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </thead>
     <tbody id="ministers-tbody"></tbody>
   </table>
+  </div><!-- .panel-body -->
 </div>
 
 <!-- Scheduler Config Panel -->
-<div class="scheduler-config-panel">
-  <h3>调度配置</h3>
+<div class="scheduler-config-panel" id="panel-scheduler">
+  <div class="panel-header">
+    <h2>调度配置</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-scheduler')">▼</button>
+  </div>
+  <div class="panel-body">
 
   <div class="config-row">
     <label for="evolve-interval">进化间隔</label>
@@ -419,10 +566,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="save-btn" onclick="saveSchedulerConfig()">保存配置</button>
     <span class="save-success" id="save-success">✓ 配置已保存</span>
   </div>
+  </div><!-- .panel-body -->
 </div>
 
 <!-- Time-series charts row -->
-<div class="grid grid-charts" id="chartsRow">
+<div class="panel-full" id="panel-charts">
+  <div class="panel-header" style="margin-bottom:12px;">
+    <h2>进化趋势</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-charts')">▼</button>
+  </div>
+  <div class="panel-body">
+  <div class="grid grid-charts" id="chartsRow">
   <div class="card">
     <div class="card-label">Task Success Rate <span class="badge-mini" id="successRateBadge">--</span></div>
     <div class="chart-wrap" id="successChart">
@@ -451,9 +605,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div style="text-align:center;font-size:0.72rem;color:var(--text-dim);margin-bottom:var(--gap);padding:4px 0;">
   历史数据已持久化，重启不丢失
 </div>
+  </div><!-- .panel-body -->
+</div>
 
 <!-- Minister leaderboard -->
-<div class="table-wrap">
+<div class="table-wrap" id="panel-leaderboard">
+  <div class="panel-header">
+    <h2>大臣排行榜</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-leaderboard')">▼</button>
+  </div>
+  <div class="panel-body">
   <table>
     <thead>
       <tr>
@@ -463,11 +624,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </thead>
     <tbody id="ministerTable"></tbody>
   </table>
+  </div><!-- .panel-body -->
 </div>
 
 <!-- Recent tasks panel -->
-<div class="panel">
-  <h3>Recent Tasks <span class="count" id="taskCount">0</span></h3>
+<div class="panel" id="panel-tasks">
+  <div class="panel-header">
+    <h2>Recent Tasks <span class="count" id="taskCount">0</span></h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-tasks')">▼</button>
+  </div>
+  <div class="panel-body">
   <div class="filter-bar" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
     <input type="text" id="taskSearch" placeholder="搜索任务..." oninput="debounceFilterTasks()"
       style="flex:1;min-width:140px;padding:6px 10px;border-radius:6px;border:1px solid var(--card-border);background:rgba(255,255,255,0.03);color:var(--text);font-family:inherit;font-size:0.78rem;outline:none;">
@@ -485,11 +651,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="taskList" class="panel-scroll">
     <div class="empty">No tasks executed yet</div>
   </div>
+  </div><!-- .panel-body -->
 </div>
 
 <!-- Alerts panel -->
-<div class="panel">
-  <h3>Active Alerts & Notifications <span class="count" id="alertCount">0</span></h3>
+<div class="panel" id="panel-alerts">
+  <div class="panel-header">
+    <h2>Active Alerts & Notifications <span class="count" id="alertCount">0</span></h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-alerts')">▼</button>
+  </div>
+  <div class="panel-body">
   <div class="filter-bar" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
     <input type="text" id="alertSearch" placeholder="搜索告警..." oninput="debounceFilterAlerts()"
       style="flex:1;min-width:140px;padding:6px 10px;border-radius:6px;border:1px solid var(--card-border);background:rgba(255,255,255,0.03);color:var(--text);font-family:inherit;font-size:0.78rem;outline:none;">
@@ -502,7 +673,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </select>
   </div>
   <div id="alertsList"><div class="empty">No alerts</div></div>
+  </div><!-- .panel-body -->
 </div>
+
+</div><!-- .dashboard-grid -->
 
 <div class="footer">
   Emperor Core &middot; Auto-refresh every 3s &middot; <span id="footerCycle">--</span>
@@ -1426,6 +1600,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
 
   loadSchedulerConfig();
+
+  // ═══ Panel collapse management ════════════════════════════════
+  function togglePanel(panelId) {
+    var panel = document.getElementById(panelId);
+    if (!panel) return;
+    panel.classList.toggle('panel-collapsed');
+    // Persist to localStorage
+    var collapsed = {};
+    try { collapsed = JSON.parse(localStorage.getItem('panelCollapsed') || '{}'); } catch(e) {}
+    collapsed[panelId] = panel.classList.contains('panel-collapsed');
+    localStorage.setItem('panelCollapsed', JSON.stringify(collapsed));
+  }
+
+  function restorePanelState() {
+    var collapsed = {};
+    try { collapsed = JSON.parse(localStorage.getItem('panelCollapsed') || '{}'); } catch(e) {}
+    Object.keys(collapsed).forEach(function(id) {
+      if (collapsed[id]) {
+        var panel = document.getElementById(id);
+        if (panel) { panel.classList.add('panel-collapsed'); }
+      }
+    });
+  }
+
+  // Restore panel collapse state on load
+  restorePanelState();
 
   // Initialize theme first (before any rendering)
   initTheme();
