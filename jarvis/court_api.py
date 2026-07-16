@@ -1572,6 +1572,115 @@ def create_app(
         return {"deleted": True, "policy_id": policy_id}
 
     # ══════════════════════════════════════════════════════════════
+    # Smart Dashboard Search
+    # ══════════════════════════════════════════════════════════════
+
+    @app.get("/api/dashboard/search")
+    def dashboard_search(q: str = "", limit: int = 5, request: Request = None):
+        """统一搜索：跨 task / eval / audit / healing / context-version 关键词查询"""
+        emperor = request.app.extra.get("emperor")
+        if emperor is None:
+            raise HTTPException(status_code=503, detail="Emperor not available")
+
+        query = q.strip().lower()
+        results = {
+            "query": query,
+            "tasks": [],
+            "evals": [],
+            "audits": [],
+            "healing": [],
+            "context_versions": [],
+        }
+
+        if not query:
+            return results
+
+        # ── Task history ──
+        task_history = getattr(emperor, "task_history", None)
+        if task_history is not None:
+            for t in getattr(task_history, "_entries", [])[-50:]:
+                desc = getattr(t, "task_description", "") or ""
+                result = getattr(t, "result", "") or ""
+                if isinstance(result, dict):
+                    result = str(result)
+                text = (desc + " " + result).lower()
+                if query in text:
+                    results["tasks"].append({
+                        "id": getattr(t, "task_id", ""),
+                        "description": desc[:120],
+                        "status": getattr(t, "status", "unknown"),
+                        "minister": getattr(t, "minister", ""),
+                    })
+            results["tasks"] = results["tasks"][-limit:]
+
+        # ── Eval results ──
+        eval_mgr = getattr(emperor, "eval_manager", None)
+        if eval_mgr is not None:
+            history = getattr(eval_mgr, "_history", [])
+            for r in history[-50:]:
+                suite = getattr(r, "suite_name", "") or ""
+                text = suite.lower()
+                if query in text:
+                    results["evals"].append({
+                        "suite": suite,
+                        "passed": getattr(r, "passed", 0),
+                        "failed": getattr(r, "failed", 0),
+                        "duration_ms": getattr(r, "duration_ms", 0),
+                    })
+            results["evals"] = results["evals"][-limit:]
+
+        # ── Audit logs ──
+        audit_mgr = getattr(emperor, "audit_manager", None)
+        if audit_mgr is not None:
+            logs = getattr(audit_mgr, "_entries", [])
+            for a in logs[-50:]:
+                task_desc = getattr(a, "task_description", "") or ""
+                result = getattr(a, "result", "") or ""
+                text = (task_desc + " " + result).lower()
+                if query in text:
+                    results["audits"].append({
+                        "id": getattr(a, "entry_id", getattr(a, "task_id", "")),
+                        "task": task_desc[:120],
+                        "result": result[:200],
+                        "timestamp": getattr(a, "timestamp", 0),
+                    })
+            results["audits"] = results["audits"][-limit:]
+
+        # ── Healing history ──
+        healer = getattr(emperor, "healing", None)
+        if healer is not None:
+            for r in healer.history(limit=50):
+                text = (r.action_name + " " + r.alert_rule).lower()
+                if query in text:
+                    results["healing"].append({
+                        "action_name": r.action_name,
+                        "alert_rule": r.alert_rule,
+                        "success": r.success,
+                        "error": r.error,
+                        "timestamp": r.timestamp,
+                    })
+            results["healing"] = results["healing"][-limit:]
+
+        # ── Context versions ──
+        ctx_mgr = getattr(emperor, "context_versioning", None)
+        if ctx_mgr is not None:
+            versions = getattr(ctx_mgr, "_versions", [])
+            for v in versions[-30:]:
+                notes = getattr(v, "notes", "") or ""
+                comp = getattr(v, "component", "") or ""
+                text = (notes + " " + comp).lower()
+                if query in text or query in v.version_tag.lower():
+                    results["context_versions"].append({
+                        "tag": v.version_tag,
+                        "component": comp,
+                        "notes": notes[:200],
+                        "timestamp": getattr(v, "timestamp", 0),
+                    })
+            results["context_versions"] = results["context_versions"][-limit:]
+
+        return results
+
+    # ══════════════════════════════════════════════════════════════
     # Self-Healing API
     # ══════════════════════════════════════════════════════════════
 

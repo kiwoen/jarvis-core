@@ -640,6 +640,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <div class="dashboard-grid">
 
+<!-- Smart Search Bar -->
+<div class="panel-full" style="margin-bottom:0;">
+  <div style="position:relative;">
+    <input id="global-search" type="text" placeholder="全局搜索 — 跨任务 / 评测 / 审计 / 自愈 / 版本快照…" 
+      style="width:100%;background:var(--card-bg);border:2px solid var(--border-color);color:var(--text-primary);padding:14px 16px;border-radius:10px;font-size:15px;font-family:inherit;box-sizing:border-box;transition:border-color 0.2s;"
+      onfocus="this.style.borderColor='var(--accent)';" 
+      onblur="this.style.borderColor='var(--border-color)';"
+      oninput="debouncedSearch()">
+    <span id="search-badge" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text-muted);display:none;"></span>
+  </div>
+  <div id="search-results" style="display:none;margin-top:12px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:10px;padding:16px;max-height:480px;overflow-y:auto;"></div>
+</div>
+
 <!-- Top stat cards -->
 <div class="panel-full grid grid-stats" id="statCards"></div>
 
@@ -2398,6 +2411,97 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     } catch (e) {
       // 静默失败
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Global Smart Search
+  // ══════════════════════════════════════════════════════════════
+
+  var searchTimer = null;
+  function debouncedSearch() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 300);
+  }
+
+  async function doSearch() {
+    var q = document.getElementById('global-search').value.trim();
+    var badge = document.getElementById('search-badge');
+    var results = document.getElementById('search-results');
+
+    if (q.length < 2) {
+      results.style.display = 'none';
+      badge.style.display = 'none';
+      return;
+    }
+
+    try {
+      var resp = await fetch(API + '/api/dashboard/search?q=' + encodeURIComponent(q) + '&limit=5');
+      var data = await resp.json();
+      var total = (data.tasks || []).length + (data.evals || []).length + (data.audits || []).length + (data.healing || []).length + (data.context_versions || []).length;
+      badge.textContent = total + ' 条结果';
+      badge.style.display = 'inline';
+      renderSearchResults(data);
+    } catch (e) {
+      badge.textContent = '搜索失败';
+      badge.style.display = 'inline';
+    }
+  }
+
+  function renderSearchResults(data) {
+    var el = document.getElementById('search-results');
+    el.style.display = 'block';
+
+    var sections = [];
+    var sectionIcon = {tasks: '📋', evals: '🧪', audits: '📜', healing: '🩺', context_versions: '🏷️'};
+    var sectionName = {tasks: '任务', evals: '评测', audits: '审计', healing: '自愈', context_versions: '版本快照'};
+
+    ['tasks', 'evals', 'audits', 'healing', 'context_versions'].forEach(function(key) {
+      var items = data[key] || [];
+      if (items.length === 0) return;
+
+      var rows = items.map(function(item) {
+        if (key === 'tasks') {
+          return '<tr><td style="font-weight:500;">' + esc(item.description) + '</td>'
+            + '<td style="color:var(--text-secondary);">' + (item.minister || '--') + '</td>'
+            + '<td style="color:var(--text-muted);">' + item.status + '</td></tr>';
+        } else if (key === 'evals') {
+          return '<tr><td style="font-weight:500;">' + esc(item.suite) + '</td>'
+            + '<td style="color:var(--success);">' + item.passed + ' pass</td>'
+            + '<td style="color:' + (item.failed > 0 ? 'var(--danger)' : 'var(--text-secondary)') + ';">' + item.failed + ' fail</td></tr>';
+        } else if (key === 'audits') {
+          return '<tr><td style="font-weight:500;">' + esc(item.task) + '</td>'
+            + '<td style="color:var(--text-secondary);">' + esc(item.result).substring(0, 80) + '</td>'
+            + '<td style="color:var(--text-muted);font-size:10px;">' + new Date(item.timestamp * 1000).toLocaleTimeString('zh-CN') + '</td></tr>';
+        } else if (key === 'healing') {
+          return '<tr><td style="font-weight:500;">' + esc(item.action_name) + '</td>'
+            + '<td style="color:var(--text-secondary);">← ' + item.alert_rule + '</td>'
+            + '<td style="color:' + (item.success ? 'var(--success)' : 'var(--danger)') + ';">' + (item.success ? '✓' : '✗') + '</td></tr>';
+        } else {
+          return '<tr><td style="font-weight:500;">' + esc(item.tag) + '</td>'
+            + '<td style="color:var(--text-secondary);">' + (item.component || '') + '</td>'
+            + '<td style="color:var(--text-muted);font-size:10px;">' + (item.notes || '').substring(0, 60) + '</td></tr>';
+        }
+      }).join('');
+
+      sections.push(
+        '<div style="margin-bottom:12px;">'
+        + '<div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--accent);">' + sectionName[key] + ' (' + items.length + ')</div>'
+        + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
+        + rows
+        + '</table></div>'
+      );
+    });
+
+    if (sections.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:16px;">未找到匹配结果</div>';
+    } else {
+      el.innerHTML = sections.join('');
+    }
+  }
+
+  function esc(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   // ═══ Panel collapse management ════════════════════════════════
