@@ -810,6 +810,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div><!-- .panel-body -->
 </div>
 
+<!-- 服务流水线面板 -->
+<div class="panel" id="panel-pipelines" style="min-width:0;">
+  <div class="panel-header">
+    <h2>服务流水线</h2>
+    <button class="panel-collapse-btn" onclick="togglePanel('panel-pipelines')">&#9660;</button>
+  </div>
+  <div class="panel-body">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+      <button onclick="executePipeline('daily_brief')" class="btn btn-sm" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;">每日简报</button>
+      <button onclick="executePipeline('health_check')" class="btn btn-sm" style="background:var(--success);color:#fff;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;">健康检查</button>
+      <button onclick="executePipeline('search_analyze')" class="btn btn-sm" style="background:var(--warning);color:#000;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;">搜索分析</button>
+    </div>
+    <div id="pipeline-output" style="font-size:12px;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:4px;padding:10px;">
+      <div style="color:var(--text-muted);text-align:center;">点击上方按钮执行服务流水线</div>
+    </div>
+    <div style="margin-top:8px;">
+      <div style="font-size:11px;color:var(--text-secondary);">执行历史</div>
+      <div id="pipeline-history" style="font-size:11px;margin-top:4px;max-height:120px;overflow-y:auto;"></div>
+    </div>
+  </div><!-- .panel-body -->
+</div>
+
 </div><!-- .dashboard-grid -->
 
 <div class="footer">
@@ -1959,6 +1981,75 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   setInterval(refreshLive, 300000);
   refreshCapabilityStats();
   setInterval(refreshCapabilityStats, 60000);
+  refreshPipelineHistory();
+  setInterval(refreshPipelineHistory, 30000);
+
+  // ═══ Pipeline functions ════════════════════════════════════
+
+  async function executePipeline(template) {
+    var outputEl = document.getElementById('pipeline-output');
+    outputEl.innerHTML = '<div style="color:var(--accent);">执行中...</div>';
+
+    try {
+      var resp = await fetch(API + '/api/pipelines/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({template: template})
+      });
+      var data = await resp.json();
+
+      var statusColor = data.status === 'completed' ? 'var(--success)' :
+                       data.status === 'failed' ? 'var(--danger)' : 'var(--warning)';
+
+      var html = '<div style="font-weight:600;margin-bottom:8px;">'
+        + data.pipeline_name + ' <span style="color:' + statusColor + '">[' + data.status + ']</span> '
+        + '<span style="color:var(--text-muted);font-weight:400;">' + data.duration + 's</span>'
+        + '</div>';
+
+      if (data.stages) {
+        html += data.stages.map(function(s) {
+          var icon = s.status === 'success' ? 'OK' : s.status === 'failed' ? 'X' : s.status === 'skipped' ? '-' : '...';
+          var color = s.status === 'success' ? 'var(--success)' :
+                     s.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)';
+          return '<div style="padding:2px 0;color:' + color + ';">  ' + icon + '  ' + s.name + '</div>';
+        }).join('');
+      }
+
+      outputEl.innerHTML = html;
+      refreshPipelineHistory();
+    } catch (e) {
+      outputEl.innerHTML = '<div style="color:var(--danger);">执行失败: ' + e.message + '</div>';
+    }
+  }
+
+  async function refreshPipelineHistory() {
+    try {
+      var resp = await fetch(API + '/api/pipelines/history?limit=10');
+      var data = await resp.json();
+      var historyEl = document.getElementById('pipeline-history');
+      if (!historyEl) return;
+
+      if (!data || data.length === 0) {
+        historyEl.innerHTML = '<div style="color:var(--text-muted);">暂无执行历史</div>';
+        return;
+      }
+
+      historyEl.innerHTML = data.map(function(r) {
+        var statusColor = r.status === 'completed' ? 'var(--success)' : 'var(--danger)';
+        var dots = (r.stages || []).map(function(s) {
+          if (s.status === 'success') return '<span style="color:var(--success);">O</span>';
+          if (s.status === 'failed') return '<span style="color:var(--danger);">X</span>';
+          return '<span style="color:var(--text-muted);">-</span>';
+        }).join('');
+        return '<div style="padding:3px 0;display:flex;justify-content:space-between;">'
+          + '<span>' + r.pipeline_name + ' <span style="color:' + statusColor + ';font-size:10px;">[' + r.status + ']</span></span>'
+          + '<span>' + dots + '  ' + r.duration + 's</span>'
+          + '</div>';
+      }).join('');
+    } catch (e) {
+      console.error('Pipeline history fetch failed:', e);
+    }
+  }
 </script>
 </body>
 </html>"""

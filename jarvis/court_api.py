@@ -926,6 +926,58 @@ def create_app(
             },
         )
 
+    # ── Pipeline endpoints ─────────────────────────────────────
+
+    class PipelineExecuteRequest(BaseModel):
+        template: str = "daily_brief"
+        context: dict = Field(default_factory=dict)
+
+    @app.post("/api/pipelines/execute")
+    def execute_pipeline(body: PipelineExecuteRequest):
+        """执行服务流水线"""
+        try:
+            from jarvis.pipeline import pipeline_registry, PipelineStatus
+
+            template = body.template
+            context = body.context
+
+            if template == "search_analyze":
+                query = context.get("query", "")
+                result = pipeline_registry.execute_template(template, context, query=query)
+            else:
+                result = pipeline_registry.execute_template(template, context)
+
+            return {
+                "status": result.status.value,
+                "pipeline_name": result.pipeline_name,
+                "pipeline_id": result.pipeline_id,
+                "stages": [
+                    {"name": s.stage_name, "status": s.status.value}
+                    for s in result.stages
+                ],
+                "duration": round(result.finished_at - result.started_at, 2),
+                "final_output": (
+                    result.final_output
+                    if result.status == PipelineStatus.COMPLETED else {}
+                ),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/pipelines/history")
+    def pipeline_history(limit: int = 20):
+        """流水线执行历史"""
+        from jarvis.pipeline import pipeline_registry
+
+        return pipeline_registry.get_history(limit)
+
+    @app.get("/api/pipelines/templates")
+    def pipeline_templates():
+        """可用的流水线模板列表"""
+        from jarvis.pipeline import pipeline_registry
+
+        return {"templates": list(pipeline_registry._templates.keys())}
+
     # ── Background heartbeat thread ───────────────────────────────
 
     import threading

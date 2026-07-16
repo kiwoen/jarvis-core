@@ -19,3 +19,9 @@ Architecture:
 
 __version__ = "0.1.0"
 __author__ = "JARVIS Core Team"
+
+# 导入核心模块
+from jarvis.pipeline import (
+    ServicePipeline, Stage, StageStatus, PipelineStatus,
+    PipelineRegistry, pipeline_registry,
+)
