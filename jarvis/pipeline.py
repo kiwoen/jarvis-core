@@ -4,7 +4,9 @@
 """
 from __future__ import annotations
 
+import datetime
 import json as _json
+import sched
 import time
 import threading
 from dataclasses import dataclass, field
@@ -406,3 +408,193 @@ def _create_search_analyze_pipeline(query: str = ""):
 pipeline_registry.register_template("daily_brief", _create_daily_brief_pipeline)
 pipeline_registry.register_template("health_check", _create_health_check_pipeline)
 pipeline_registry.register_template("search_analyze", _create_search_analyze_pipeline)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Pipeline Scheduler — automated continuous service execution
+# ═══════════════════════════════════════════════════════════════════
+
+
+class PipelineScheduler:
+    """流水线定时调度器 — 让服务流水线持续自动运行"""
+
+    def __init__(self, registry: PipelineRegistry = None):
+        self.registry = registry or pipeline_registry
+        self._scheduler = sched.scheduler(time.time, time.sleep)
+        self._jobs: Dict[str, Dict] = {}  # job_id -> {template, interval, next_run, ...}
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def add_schedule(self, job_id: str, template_name: str,
+                     interval_minutes: int = 60,
+                     context: Dict = None,
+                     cron_expr: str = None) -> str:
+        """添加定时流水线
+
+        Args:
+            job_id: 唯一标识
+            template_name: 流水线模板名
+            interval_minutes: 间隔分钟数（cron_expr 为 None 时使用）
+            context: 执行上下文
+            cron_expr: cron 表达式（"分 时 日 月 周"），优先于 interval_minutes
+        """
+        if template_name not in self.registry._templates:
+            raise ValueError(f"Unknown template: {template_name}")
+
+        with self._lock:
+            self._jobs[job_id] = {
+                "template": template_name,
+                "interval_minutes": interval_minutes,
+                "cron_expr": cron_expr,
+                "context": context or {},
+                "enabled": True,
+                "run_count": 0,
+                "last_run": None,
+                "last_result": None,
+                "next_run": self._calc_next_run(interval_minutes, cron_expr),
+            }
+        return job_id
+
+    def remove_schedule(self, job_id: str) -> bool:
+        with self._lock:
+            if job_id in self._jobs:
+                del self._jobs[job_id]
+                return True
+            return False
+
+    def enable_job(self, job_id: str) -> bool:
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id]["enabled"] = True
+                self._jobs[job_id]["next_run"] = self._calc_next_run(
+                    self._jobs[job_id]["interval_minutes"],
+                    self._jobs[job_id]["cron_expr"]
+                )
+                return True
+            return False
+
+    def disable_job(self, job_id: str) -> bool:
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id]["enabled"] = False
+                self._jobs[job_id]["next_run"] = None
+                return True
+            return False
+
+    def get_jobs(self) -> List[Dict]:
+        """获取所有调度任务"""
+        with self._lock:
+            return [
+                {
+                    "job_id": jid,
+                    "template": job["template"],
+                    "interval_minutes": job["interval_minutes"],
+                    "cron_expr": job["cron_expr"],
+                    "enabled": job["enabled"],
+                    "run_count": job["run_count"],
+                    "last_run": job["last_run"],
+                    "next_run": job["next_run"],
+                    "last_result": job["last_result"]["status"] if job["last_result"] else None,
+                }
+                for jid, job in self._jobs.items()
+            ]
+
+    def start(self):
+        """启动调度器（后台线程）"""
+        if self._running:
+            return
+
+        self._running = True
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="pipeline-scheduler")
+        self._thread.start()
+
+    def stop(self):
+        """停止调度器"""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _run_loop(self):
+        """调度循环"""
+        while self._running:
+            now = time.time()
+            next_job_time = None
+
+            with self._lock:
+                for job_id, job in self._jobs.items():
+                    if not job["enabled"]:
+                        continue
+
+                    next_run = job.get("next_run")
+                    if next_run and now >= next_run:
+                        # 执行流水线
+                        try:
+                            result = self.registry.execute_template(
+                                job["template"],
+                                context=job["context"]
+                            )
+                            job["last_result"] = {
+                                "status": result.status.value,
+                                "pipeline_id": result.pipeline_id,
+                            }
+                        except Exception as e:
+                            job["last_result"] = {"status": "error", "error": str(e)}
+
+                        job["run_count"] += 1
+                        job["last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        job["next_run"] = self._calc_next_run(
+                            job["interval_minutes"],
+                            job["cron_expr"]
+                        )
+
+                    if job["enabled"] and job.get("next_run"):
+                        if next_job_time is None or job["next_run"] < next_job_time:
+                            next_job_time = job["next_run"]
+
+            # 睡眠到下一个任务时间
+            if next_job_time:
+                sleep_seconds = max(1, next_job_time - time.time())
+                time.sleep(min(sleep_seconds, 30))  # 最多睡 30 秒，避免错过
+            else:
+                time.sleep(30)
+
+    def _calc_next_run(self, interval_minutes: int, cron_expr: str = None) -> float:
+        """计算下次执行时间（Unix timestamp）"""
+        now = datetime.datetime.now()
+
+        if cron_expr:
+            # 简单 cron 解析：分 时 日 月 周
+            return self._next_cron_time(now, cron_expr)
+
+        # 固定间隔
+        return time.time() + interval_minutes * 60
+
+    def _next_cron_time(self, now: datetime.datetime, cron_expr: str) -> float:
+        """计算下一个 cron 匹配时间"""
+        parts = cron_expr.strip().split()
+        if len(parts) != 5:
+            return time.time() + 3600  # fallback: 1 小时
+
+        minute_part, hour_part, day_part, month_part, weekday_part = parts
+
+        # 简单实现：匹配每小时/每天的情况
+        # 例如 "0 8 * * *" = 每天 8:00
+        try:
+            target_minute = int(minute_part) if minute_part != "*" else 0
+            target_hour = int(hour_part) if hour_part != "*" else now.hour
+        except ValueError:
+            return time.time() + 3600
+
+        next_run = now.replace(minute=target_minute, second=0, microsecond=0)
+
+        if day_part == "*":
+            next_run = next_run.replace(hour=target_hour)
+            if next_run <= now:
+                next_run += datetime.timedelta(days=1)
+
+        return next_run.timestamp()
+
+
+# 全局调度器单例
+pipeline_scheduler = PipelineScheduler()

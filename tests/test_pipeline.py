@@ -3,6 +3,7 @@ import pytest
 from jarvis.pipeline import (
     ServicePipeline, Stage, StageStatus, PipelineStatus,
     PipelineRegistry, pipeline_registry,
+    PipelineScheduler,
 )
 
 
@@ -266,3 +267,64 @@ class TestPipelineTemplates:
         assert p.stages[0].name == "搜索"
         assert p.stages[1].name == "抓取详情"
         assert p.stages[2].name == "分析总结"
+
+
+class TestPipelineScheduler:
+    def test_add_schedule(self):
+        scheduler = PipelineScheduler()
+        scheduler.registry.register_template(
+            "test_sched",
+            lambda: ServicePipeline("test").add_stage(
+                Stage("s1", lambda ctx: {"ok": True}, output_key="s1")
+            ),
+        )
+
+        job_id = scheduler.add_schedule("test_job", "test_sched", interval_minutes=60)
+        assert job_id == "test_job"
+        jobs = scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["template"] == "test_sched"
+
+    def test_add_schedule_unknown_template(self):
+        scheduler = PipelineScheduler()
+        with pytest.raises(ValueError):
+            scheduler.add_schedule("bad", "nonexistent", 60)
+
+    def test_remove_schedule(self):
+        scheduler = PipelineScheduler()
+        scheduler.registry.register_template(
+            "test_sched",
+            lambda: ServicePipeline("test").add_stage(
+                Stage("s1", lambda ctx: {"ok": True})
+            ),
+        )
+
+        scheduler.add_schedule("j1", "test_sched", 60)
+        assert scheduler.remove_schedule("j1")
+        assert not scheduler.remove_schedule("j1")
+        assert len(scheduler.get_jobs()) == 0
+
+    def test_enable_disable(self):
+        scheduler = PipelineScheduler()
+        scheduler.registry.register_template(
+            "test_sched",
+            lambda: ServicePipeline("test").add_stage(
+                Stage("s1", lambda ctx: {"a": 1})
+            ),
+        )
+
+        scheduler.add_schedule("j1", "test_sched", 60)
+        assert scheduler.get_jobs()[0]["enabled"]
+
+        scheduler.disable_job("j1")
+        assert not scheduler.get_jobs()[0]["enabled"]
+
+        scheduler.enable_job("j1")
+        assert scheduler.get_jobs()[0]["enabled"]
+
+    def test_start_stop(self):
+        scheduler = PipelineScheduler()
+        scheduler.start()
+        assert scheduler._running
+        scheduler.stop()
+        assert not scheduler._running

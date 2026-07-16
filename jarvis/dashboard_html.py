@@ -829,6 +829,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div style="font-size:11px;color:var(--text-secondary);">执行历史</div>
       <div id="pipeline-history" style="font-size:11px;margin-top:4px;max-height:120px;overflow-y:auto;"></div>
     </div>
+    <!-- 定时调度区 -->
+    <div style="margin-top:16px;border-top:1px solid var(--border-color);padding-top:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-size:12px;font-weight:600;color:var(--text-secondary);">定时调度</span>
+        <button onclick="showScheduleDialog()" style="background:var(--accent);color:#fff;border:none;border-radius:3px;padding:2px 10px;font-size:11px;cursor:pointer;">+ 添加</button>
+      </div>
+      <div id="pipeline-schedules" style="font-size:11px;">
+        <div style="color:var(--text-muted);">加载中...</div>
+      </div>
+    </div>
   </div><!-- .panel-body -->
 </div>
 
@@ -1983,6 +1993,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   setInterval(refreshCapabilityStats, 60000);
   refreshPipelineHistory();
   setInterval(refreshPipelineHistory, 30000);
+  refreshPipelineSchedules();
+  setInterval(refreshPipelineSchedules, 60000);
 
   // ═══ Pipeline functions ════════════════════════════════════
 
@@ -2048,6 +2060,87 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       }).join('');
     } catch (e) {
       console.error('Pipeline history fetch failed:', e);
+    }
+  }
+
+  // ═══ Pipeline scheduler functions ══════════════════════════
+
+  async function refreshPipelineSchedules() {
+    try {
+      var resp = await fetch(API + '/api/pipelines/schedule');
+      var jobs = await resp.json();
+      var el = document.getElementById('pipeline-schedules');
+      if (!el) return;
+
+      if (!jobs || jobs.length === 0) {
+        el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">暂无定时调度</div>';
+        return;
+      }
+
+      el.innerHTML = jobs.map(function(j) {
+        var statusColor = j.enabled ? 'var(--success)' : 'var(--text-muted)';
+        var nextRun = j.next_run ? new Date(j.next_run * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'}) : '--';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-color);">'
+          + '<div style="flex:1;min-width:0;">'
+          + '<div style="font-weight:500;">' + j.template + ' <span style="color:' + statusColor + ';font-size:10px;">[' + (j.enabled ? '启用' : '禁用') + ']</span></div>'
+          + '<div style="color:var(--text-muted);font-size:10px;">下次: ' + nextRun + ' | 已执行: ' + j.run_count + '次</div>'
+          + '</div>'
+          + '<div style="display:flex;gap:4px;">'
+          + '<button onclick="toggleSchedule(\'' + j.job_id + '\', ' + !j.enabled + ')" style="background:none;border:1px solid var(--border-color);color:var(--text-primary);border-radius:2px;padding:1px 6px;font-size:10px;cursor:pointer;">' + (j.enabled ? '暂停' : '启用') + '</button>'
+          + '<button onclick="deleteSchedule(\'' + j.job_id + '\')" style="background:none;border:1px solid var(--border-color);color:var(--danger);border-radius:2px;padding:1px 6px;font-size:10px;cursor:pointer;">删除</button>'
+          + '</div></div>';
+      }).join('');
+    } catch (e) {
+      console.error('Schedule refresh failed:', e);
+    }
+  }
+
+  async function toggleSchedule(jobId, enable) {
+    try {
+      await fetch(API + '/api/pipelines/schedule/' + jobId + '/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enable})
+      });
+      refreshPipelineSchedules();
+    } catch (e) {
+      console.error('Toggle schedule failed:', e);
+    }
+  }
+
+  async function deleteSchedule(jobId) {
+    try {
+      await fetch(API + '/api/pipelines/schedule/' + jobId, {method: 'DELETE'});
+      refreshPipelineSchedules();
+    } catch (e) {
+      console.error('Delete schedule failed:', e);
+    }
+  }
+
+  async function showScheduleDialog() {
+    var template = prompt('选择流水线模板:\\n1. daily_brief (每日简报)\\n2. health_check (健康检查)\\n3. search_analyze (搜索分析)', 'daily_brief');
+    if (!template) return;
+
+    var interval = prompt('执行间隔（分钟），默认 1440（每天）:', '1440');
+    if (!interval) return;
+
+    try {
+      var resp = await fetch(API + '/api/pipelines/schedule', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          template: template,
+          interval_minutes: parseInt(interval)
+        })
+      });
+      var data = await resp.json();
+      if (data.job_id) {
+        refreshPipelineSchedules();
+      } else {
+        alert('添加失败: ' + (data.error || '未知错误'));
+      }
+    } catch (e) {
+      alert('请求失败: ' + e.message);
     }
   }
 </script>

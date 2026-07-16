@@ -978,6 +978,65 @@ def create_app(
 
         return {"templates": list(pipeline_registry._templates.keys())}
 
+    # ── Pipeline scheduler endpoints ─────────────────────────────
+
+    @app.post("/api/pipelines/schedule")
+    def add_pipeline_schedule():
+        """添加流水线定时调度"""
+        data = request.get_json() or {}
+        template = data.get("template", "daily_brief")
+        interval_minutes = data.get("interval_minutes", 1440)  # 默认每天
+        context = data.get("context", {})
+        cron_expr = data.get("cron_expr")  # 可选
+
+        import uuid
+
+        job_id = f"job_{uuid.uuid4().hex[:8]}"
+
+        try:
+            from jarvis.pipeline import pipeline_scheduler
+
+            pipeline_scheduler.add_schedule(
+                job_id=job_id,
+                template_name=template,
+                interval_minutes=interval_minutes,
+                context=context,
+                cron_expr=cron_expr,
+            )
+            return jsonify({"job_id": job_id, "status": "scheduled"})
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.delete("/api/pipelines/schedule/<job_id>")
+    def remove_pipeline_schedule(job_id):
+        """删除定时调度"""
+        from jarvis.pipeline import pipeline_scheduler
+
+        success = pipeline_scheduler.remove_schedule(job_id)
+        return jsonify({"job_id": job_id, "removed": success})
+
+    @app.post("/api/pipelines/schedule/<job_id>/toggle")
+    def toggle_pipeline_schedule(job_id):
+        """启用/禁用定时调度"""
+        data = request.get_json() or {}
+        enabled = data.get("enabled", True)
+
+        from jarvis.pipeline import pipeline_scheduler
+
+        if enabled:
+            success = pipeline_scheduler.enable_job(job_id)
+        else:
+            success = pipeline_scheduler.disable_job(job_id)
+
+        return jsonify({"job_id": job_id, "enabled": enabled, "success": success})
+
+    @app.get("/api/pipelines/schedule")
+    def list_pipeline_schedules():
+        """列出所有定时调度"""
+        from jarvis.pipeline import pipeline_scheduler
+
+        return jsonify(pipeline_scheduler.get_jobs())
+
     # ── Background heartbeat thread ───────────────────────────────
 
     import threading
