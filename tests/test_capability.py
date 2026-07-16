@@ -9,6 +9,7 @@ import pytest
 from jarvis.capability import (
     Capability,
     CapabilityRegistry,
+    _extract_city_from_prompt,
     _handle_datetime,
     _handle_file_info,
     _handle_hash,
@@ -17,9 +18,10 @@ from jarvis.capability import (
     _handle_random,
     _handle_text,
     _handle_uuid_gen,
+    _safe_eval_math,
+    _weather_handler,
     _web_fetch_handler,
     _web_search_handler,
-    _safe_eval_math,
     create_default_registry,
 )
 
@@ -264,9 +266,9 @@ class TestCapabilityRegistry:
 
     def test_list_all(self):
         reg = create_default_registry()
-        assert reg.count == 10
+        assert reg.count == 11
         names = {c.name for c in reg.list_all()}
-        assert names == {"datetime", "math", "random", "text", "file_info", "hash", "json_tool", "uuid_gen", "web_search", "web_fetch"}
+        assert names == {"datetime", "math", "random", "text", "file_info", "hash", "json_tool", "uuid_gen", "weather", "web_search", "web_fetch"}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -305,12 +307,12 @@ class TestFindBest:
         assert cap is not None
         assert cap.name == "text"
 
-    def test_no_weather_capability(self):
-        """Prompt about '天气' should not match any capability since there's no weather handler."""
+    def test_weather_capability_matches(self):
+        """Prompt about '天气' should match the weather capability."""
         reg = create_default_registry()
-        cap = reg.find_best("今天天气怎么样", "general")
-        # There is no "weather" capability — should return None
-        assert cap is None
+        cap = reg.find_best("今天天气怎么样", "network")
+        assert cap is not None
+        assert cap.name == "weather"
 
     def test_no_match_at_all(self):
         reg = create_default_registry()
@@ -355,7 +357,7 @@ class TestCourtIntegration:
         from jarvis.emperor import Emperor
         emp = Emperor()
         assert emp.capability_registry is not None
-        assert emp.capability_registry.count == 10
+        assert emp.capability_registry.count == 11
 
     def test_task_result_contains_capability_output(self):
         """When prompt matches a capability, result should contain capability output."""
@@ -495,9 +497,9 @@ class TestSafeEvalMath:
 
 
 class TestDefaultRegistry:
-    def test_has_all_ten(self):
+    def test_has_all_eleven(self):
         reg = create_default_registry()
-        assert reg.count == 10
+        assert reg.count == 11
 
     def test_each_capability_executable(self):
         reg = create_default_registry()
@@ -587,3 +589,111 @@ class TestWebFetchHandler:
         monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
         r = _web_fetch_handler("https://example.com")
         assert "网页抓取失败" in r["result"] or "fail" in r["result"].lower()
+
+
+# ══════════════════════════════════════════════════════════════════
+# _weather_handler
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestWeatherHandler:
+    def test_returns_result(self):
+        r = _weather_handler("查询北京天气")
+        assert "result" in r
+        assert "data" in r
+
+    def test_data_has_required_fields(self):
+        r = _weather_handler("查询北京天气")
+        data = r["data"]
+        assert "city" in data
+        assert "temp_c" in data
+        assert "humidity" in data
+        assert "weather_desc" in data
+        assert "source" in data
+        assert data["source"] == "wttr.in"
+
+    def test_city_defaults_to_beijing(self):
+        r = _weather_handler("今天会不会下雨")
+        assert "Beijing" in r["data"]["city"]
+
+    def test_chinese_city_detection(self):
+        r = _weather_handler("查询上海的天气")
+        assert "Shanghai" in r["data"]["city"] or "上海" in r["result"]
+
+    def test_english_city_detection(self):
+        r = _weather_handler("what is the weather in London")
+        assert "London" in r["data"]["city"]
+
+    def test_network_failure_graceful(self, monkeypatch):
+        import urllib.request
+
+        def mock_urlopen(*args, **kwargs):
+            raise OSError("Network unreachable")
+
+        monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+        r = _weather_handler("查询天气")
+        assert "天气查询失败" in r["result"]
+        assert "error" in r["data"]
+
+    def test_weather_capability_registered(self):
+        """Verify weather capability is registered in default registry."""
+        reg = create_default_registry()
+        cap = reg.get_by_name("weather")
+        assert cap is not None
+        assert cap.name == "weather"
+        assert "network" in cap.domains
+
+    def test_weather_capability_domain_lookup(self):
+        """Verify weather appears in network domain lookups."""
+        reg = create_default_registry()
+        network_caps = reg.get("network")
+        names = [c.name for c in network_caps]
+        assert "weather" in names
+
+    def test_exec_with_empty_prompt(self):
+        r = _weather_handler("")
+        assert "result" in r
+        assert "data" in r
+
+    def test_find_best_weather_keyword(self):
+        """Verify find_best routes weather keywords to weather capability."""
+        reg = create_default_registry()
+        cap = reg.find_best("今天上海天气怎么样", "network")
+        assert cap is not None
+        assert cap.name == "weather"
+
+    def test_weather_negative_keyword_prevents_datetime(self):
+        """Verify '今天天气' does NOT match datetime."""
+        reg = create_default_registry()
+        cap = reg.find_best("今天天气如何", "general")
+        assert cap is None or cap.name != "datetime"
+
+
+# ══════════════════════════════════════════════════════════════════
+# _extract_city_from_prompt
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestExtractCity:
+    def test_chinese_weather_pattern(self):
+        assert _extract_city_from_prompt("查询北京的天气") == "北京"
+        assert _extract_city_from_prompt("上海的天气怎么样") == "上海"
+
+    def test_chinese_temperature_pattern(self):
+        assert _extract_city_from_prompt("广州的温度是多少") == "广州"
+
+    def test_chinese_inquiry_pattern(self):
+        assert _extract_city_from_prompt("查一下深圳") == "深圳"
+        assert _extract_city_from_prompt("查成都") == "成都"
+
+    def test_english_weather_in_pattern(self):
+        assert _extract_city_from_prompt("weather in London") == "London"
+        assert _extract_city_from_prompt("what is the weather in Tokyo") == "Tokyo"
+
+    def test_english_weather_reverse_pattern(self):
+        assert _extract_city_from_prompt("what is London weather like") == "London"
+
+    def test_default_beijing(self):
+        assert _extract_city_from_prompt("今天会不会下雨") == "Beijing"
+        assert _extract_city_from_prompt("what a nice day") == "Beijing"
+        assert _extract_city_from_prompt("") == "Beijing"

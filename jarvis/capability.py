@@ -162,6 +162,13 @@ class CapabilityRegistry:
         "互联网": "web_search", "search": "web_search", "web": "web_search",
         "搜": "web_search", "查查看": "web_search",
 
+        # weather
+        "天气": "weather", "温度": "weather", "下雨": "weather",
+        "降水": "weather", "风力": "weather", "湿度": "weather",
+        "weather": "weather", "temperature": "weather", "rain": "weather",
+        "晴天": "weather", "多云": "weather", "阴天": "weather",
+        "下雪": "weather", "snow": "weather", "气温": "weather",
+
         # web_fetch
         "抓取": "web_fetch", "网页": "web_fetch", "链接": "web_fetch",
         "http": "web_fetch", "网站": "web_fetch", "fetch": "web_fetch",
@@ -172,7 +179,7 @@ class CapabilityRegistry:
     # skip that capability even if a positive keyword matched.
     # This prevents e.g. "今天天气" from matching datetime.
     NEGATIVE_KEYWORDS: dict[str, list[str]] = {
-        "datetime": ["天气", "weather", "气温", "下雨", "下雪", "多云", "晴天", "阴天"],
+        "datetime": ["天气", "weather", "气温", "下雨", "下雪", "多云", "晴天", "阴天", "温度", "降水", "风力", "湿度"],
     }
 
     def find_best(self, prompt: str, domain: str) -> Optional[Capability]:
@@ -831,6 +838,100 @@ def _html_to_text(html: str) -> str:
     return raw.strip()
 
 
+def _weather_handler(prompt: str, **kwargs: Any) -> dict:
+    """Query weather using wttr.in (free, no API key)."""
+    city = _extract_city_from_prompt(prompt)
+    if not city:
+        city = "Beijing"
+
+    encoded = urllib.parse.quote(city)
+    url = f"https://wttr.in/{encoded}?format=j1"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "EmperorCore/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
+        logger.warning("weather query failed for city=%r: %s", city, exc)
+        return {"result": f"天气查询失败: {exc}", "data": {"error": str(exc), "source": "wttr.in"}}
+
+    current = data.get("current_condition", [{}])[0]
+    weather_desc = data.get("weather", [{}])[0].get("hourly", [{}])
+
+    result_lines = [f"📍 {city}"]
+
+    if current:
+        temp_c = current.get("temp_C", "N/A")
+        humidity = current.get("humidity", "N/A")
+        feels_like = current.get("FeelsLikeC", "N/A")
+        wind_speed = current.get("windspeedKmph", "N/A")
+        wind_dir = current.get("winddir16Point", "N/A")
+        weather_desc_short = (current.get("weatherDesc", [{}])[0].get("value", "N/A")
+                              if isinstance(current.get("weatherDesc"), list) and current["weatherDesc"]
+                              else "N/A")
+        visibility = current.get("visibility", "N/A")
+        uv_index = current.get("uvIndex", "N/A")
+
+        result_lines.append(f"🌡 当前温度: {temp_c}°C (体感 {feels_like}°C)")
+        result_lines.append(f"☁ 天气: {weather_desc_short}")
+        result_lines.append(f"💧 湿度: {humidity}%")
+        result_lines.append(f"🌬 风速: {wind_speed} km/h ({wind_dir})")
+        if visibility != "N/A":
+            result_lines.append(f"👁 能见度: {visibility} km")
+        if uv_index != "N/A":
+            result_lines.append(f"☀ UV 指数: {uv_index}")
+
+    today = weather_desc[0] if weather_desc else {}
+    if today:
+        precip = today.get("chanceofrain", "N/A")
+        result_lines.append(f"🌧 降水概率: {precip}%")
+
+    result_text = "\n".join(result_lines)
+
+    return {"result": result_text, "data": {
+        "city": city,
+        "temp_c": temp_c,
+        "feels_like_c": feels_like,
+        "humidity": humidity,
+        "weather_desc": weather_desc_short,
+        "wind_speed_kmph": wind_speed,
+        "source": "wttr.in",
+    }}
+
+
+def _extract_city_from_prompt(prompt: str) -> str:
+    """Extract city name from a natural-language prompt.
+
+    Supports Chinese and English patterns; defaults to 'Beijing' if no city detected.
+    """
+    import re
+
+    # Strip common Chinese query prefixes first
+    cleaned = re.sub(
+        r'^(?:查询|查一下|查\s*|搜索|搜|看看?|问一下|请问|帮我\s*|帮我查|请帮我|请查)\s*',
+        '', prompt,
+    )
+
+    patterns = [
+        r'([\u4e00-\u9fa5]{2,6}?)(?:的)?天气',
+        r'([\u4e00-\u9fa5]{2,6}?)(?:的)?温度',
+        r'weather\s+(?:in|of|for)\s+(\w+)',
+        r'(\w+)\s+weather',
+    ]
+    for pat in patterns:
+        match = re.search(pat, cleaned, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+    # Also try patterns on original prompt for top-level commands
+    pat2 = r'查(?:一下|下)?([\u4e00-\u9fa5]{2,6})'
+    m2 = re.search(pat2, prompt)
+    if m2:
+        return m2.group(1).strip()
+
+    return "Beijing"
+
+
 # ══════════════════════════════════════════════════════════════════
 # Factory: create a registry with all built-in capabilities
 # ══════════════════════════════════════════════════════════════════
@@ -858,6 +959,7 @@ def create_default_registry(enabled: Optional[list[str]] = None) -> CapabilityRe
     _reg("hash", "计算字符串的 MD5 / SHA1 / SHA256 哈希摘要", ["code", "data"], _handle_hash)
     _reg("json_tool", "JSON 格式化美化 / 校验 / 压缩", ["code", "data"], _handle_json_tool)
     _reg("uuid_gen", "生成 UUID4 唯一标识符", ["code", "general"], _handle_uuid_gen)
+    _reg("weather", "查询城市天气（温度/湿度/风力/降水概率）", ["network", "general"], _weather_handler)
     _reg("web_search", "搜索互联网信息（通过 DuckDuckGo）", ["general", "data"], _web_search_handler)
     _reg("web_fetch", "抓取指定网页的内容", ["general", "data", "code"], _web_fetch_handler)
 
